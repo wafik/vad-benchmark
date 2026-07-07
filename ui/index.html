@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>VAD Benchmark</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- ─── Topbar ─────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect x="2" y="2" width="24" height="24" rx="6" fill="var(--accent)" opacity="0.12"/>
+          <!-- waveform-ish glyph -->
+          <rect x="6"  y="13" width="2" height="2"  rx="1" fill="var(--accent)"/>
+          <rect x="9"  y="11" width="2" height="6"  rx="1" fill="var(--accent)"/>
+          <rect x="12" y="9"  width="2" height="10" rx="1" fill="var(--accent)" opacity="0.85"/>
+          <rect x="15" y="11" width="2" height="6"  rx="1" fill="var(--accent)"/>
+          <rect x="18" y="8"  width="2" height="12" rx="1" fill="var(--accent)" opacity="0.65"/>
+          <rect x="21" y="11" width="2" height="6"  rx="1" fill="var(--accent)" opacity="0.45"/>
+        </svg>
+      </div>
+      <div>
+        <div class="title">VAD Benchmark</div>
+        <div class="sub">ai4db · Indonesian · Silero VAD vs none</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div id="model-badge" class="model-badge" title="Current Whisper model">
+        <span class="badge-dot"></span>
+        <span id="model-badge-text">–</span>
+      </div>
+      <div id="vad-badge" class="vad-badge" title="Default VAD state">
+        <span class="badge-dot"></span>
+        <span id="vad-badge-text">–</span>
+      </div>
+      <span id="last-run" class="last-run" title="When the last benchmark finished">–</span>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- ─── System Resources ────────────────────────────────── -->
+  <section class="panel sysmon-panel">
+    <header class="panel-head">
+      <h2>System resources</h2>
+      <span class="muted" id="sysmon-updated">–</span>
+    </header>
+    <div class="sysmon-grid" id="sysmon-grid">
+      <div class="sysmon-card" data-metric="cpu">
+        <div class="sysmon-head">
+          <span class="sysmon-label">CPU</span>
+          <span class="sysmon-value" id="sysmon-cpu-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-cpu-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-cpu-sub"></div>
+      </div>
+      <div class="sysmon-card" data-metric="ram">
+        <div class="sysmon-head">
+          <span class="sysmon-label">RAM</span>
+          <span class="sysmon-value" id="sysmon-ram-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-ram-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-ram-sub"></div>
+      </div>
+      <div class="sysmon-card" data-metric="cpu-temp">
+        <div class="sysmon-head">
+          <span class="sysmon-label">CPU temp</span>
+          <span class="sysmon-value" id="sysmon-cputemp-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar sysmon-bar-temp" id="sysmon-cputemp-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-cputemp-sub"></div>
+      </div>
+      <div class="sysmon-card" data-metric="gpu">
+        <div class="sysmon-head">
+          <span class="sysmon-label">GPU</span>
+          <span class="sysmon-value" id="sysmon-gpu-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-gpu-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-gpu-sub"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Audio player ─────────────────────────────────────── -->
+  <section class="panel audio-panel">
+    <header class="panel-head">
+      <h2>Audio under test</h2>
+      <span class="muted" id="audio-meta">podcast.mp3 · 16 kHz mono · –</span>
+    </header>
+    <audio id="audio-player" controls preload="metadata" src="/api/audio"></audio>
+  </section>
+
+  <!-- ─── Run panel (the configurable surface) ─────────────── -->
+  <section class="panel run-panel">
+    <header class="panel-head">
+      <h2>Run benchmark</h2>
+      <span class="muted">Configure each config's VAD knobs, then click Run.</span>
+    </header>
+
+    <div class="run-toolbar">
+      <button id="btn-add-config" class="btn btn-ghost" type="button">+ Add config</button>
+      <button id="btn-default-compare" class="btn btn-ghost" type="button">Reset to baseline vs silero</button>
+      <button id="btn-run" class="btn btn-primary" type="button">Run benchmark</button>
+    </div>
+
+    <div id="configs-list" class="configs-list"></div>
+
+    <div class="run-status muted" id="run-status">Idle.</div>
+  </section>
+
+  <!-- ─── Results ──────────────────────────────────────────── -->
+  <section class="panel results-panel" id="results-panel" hidden>
+    <header class="panel-head">
+      <h2>Results</h2>
+      <span class="muted" id="results-meta">–</span>
+    </header>
+
+    <div class="results-summary" id="results-summary"></div>
+
+    <table class="results-table" id="results-table">
+      <thead>
+        <tr>
+          <th>Config</th>
+          <th>VAD</th>
+          <th class="num">WER ↓</th>
+          <th class="num">CER ↓</th>
+          <th class="num">RTF</th>
+          <th class="num">Runtime</th>
+          <th class="num">Silence removed</th>
+          <th class="num">Segments</th>
+          <th>Model</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <div class="best-line muted" id="best-line"></div>
+
+    <div class="config-detail" id="config-detail"></div>
+  </section>
+
+  <!-- ─── History ──────────────────────────────────────────── -->
+  <section class="panel history-panel" id="history-panel" hidden>
+    <header class="panel-head">
+      <h2>Run history</h2>
+      <span class="muted">Newest first · up to 50 runs</span>
+    </header>
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th class="num">Configs</th>
+          <th>Best WER</th>
+          <th>Best CER</th>
+          <th class="num">Total runtime</th>
+          <th class="num">Audio</th>
+        </tr>
+      </thead>
+      <tbody id="history-body"></tbody>
+    </table>
+  </section>
+
+  <footer class="footer muted">
+    <p>
+      VAD benchmark for <code>ai4db</code>'s Whisper + Silero VAD pipeline on Indonesian audio.
+      Compares <strong>vad enabled vs disabled</strong> via <code>whisper-cli</code>'s built-in
+      <code>--vad --vad-model</code> flags.
+    </p>
+    <p>
+      Caveats: ground truth is a YouTube auto-transcript — WER is <em>relative</em> between
+      configs, not absolute accuracy. <code>tiny.id</code> is a small model — the
+      <strong>VAD on/off delta</strong> is the real signal, not the raw number.
+    </p>
+  </footer>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

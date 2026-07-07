@@ -1,0 +1,27 @@
+# generated artifacts
+reports/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# generated wav (cached from mp3)
+data/podcast_16k.wav
+
+# large binary models — copy from ai4db/models/whisper.cpp/ or download
+# from https://huggingface.co/ggerganov/whisper.cpp/resolve/main/
+models/*.bin
+
+# local env (SSH host, port overrides, etc.) — use .env.example as template
+.env
+
+# python venvs
+.venv/
+
+# editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
