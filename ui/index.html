@@ -18,7 +18,6 @@
       <div class="logo">
         <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
           <rect x="2" y="2" width="24" height="24" rx="6" fill="var(--accent)" opacity="0.12"/>
-          <!-- waveform-ish glyph -->
           <rect x="6"  y="13" width="2" height="2"  rx="1" fill="var(--accent)"/>
           <rect x="9"  y="11" width="2" height="6"  rx="1" fill="var(--accent)"/>
           <rect x="12" y="9"  width="2" height="10" rx="1" fill="var(--accent)" opacity="0.85"/>
@@ -28,8 +27,8 @@
         </svg>
       </div>
       <div>
-        <div class="title">VAD Benchmark</div>
-        <div class="sub">ai4db · Indonesian · Silero VAD vs none</div>
+        <div class="title" data-i18n="topbar.title">VAD Benchmark</div>
+        <div class="sub" data-i18n="topbar.sub">ai4db · Indonesian · Silero VAD vs none</div>
       </div>
     </div>
     <div class="topbar-right">
@@ -42,6 +41,10 @@
         <span id="vad-badge-text">–</span>
       </div>
       <span id="last-run" class="last-run" title="When the last benchmark finished">–</span>
+      <div class="lang-toggle" role="group" aria-label="Language">
+        <button type="button" data-lang="en" class="lang-btn">EN</button>
+        <button type="button" data-lang="id" class="lang-btn">ID</button>
+      </div>
     </div>
   </div>
 </header>
@@ -53,27 +56,108 @@
     <li class="flow-step is-active" data-stage="1">
       <button type="button" data-step-target="run-panel" class="flow-step-btn">
         <span class="flow-step-num">1</span>
-        <span class="flow-step-label">Configure</span>
+        <span class="flow-step-label" data-i18n="stepper.1">Configure</span>
       </button>
     </li>
     <li class="flow-step" data-stage="2">
-      <button type="button" data-step-target="run-status" class="flow-step-btn">
+      <button type="button" data-step-target="run-panel" class="flow-step-btn">
         <span class="flow-step-num">2</span>
-        <span class="flow-step-label">Run</span>
+        <span class="flow-step-label" data-i18n="stepper.2">Run</span>
       </button>
     </li>
     <li class="flow-step" data-stage="3">
       <button type="button" data-step-target="results-panel" class="flow-step-btn">
         <span class="flow-step-num">3</span>
-        <span class="flow-step-label">Compare results</span>
+        <span class="flow-step-label" data-i18n="stepper.3">Compare results</span>
       </button>
     </li>
   </ol>
 
-  <!-- ─── System Resources ────────────────────────────────── -->
-  <section class="panel sysmon-panel">
+  <!-- ─── Run panel (the configurable surface) ─────────────── -->
+  <section class="panel run-panel" id="run-panel">
     <header class="panel-head">
-      <h2>System resources</h2>
+      <h2 data-i18n="run.title">Run benchmark</h2>
+      <span class="muted" data-i18n="run.sub">Configure each config's VAD knobs, then click Run.</span>
+    </header>
+
+    <!-- Audio under test (collapsed, moved into Run panel) -->
+    <div class="audio-inline">
+      <audio id="audio-player" controls preload="metadata" src="/api/audio"></audio>
+      <span class="muted" id="audio-meta">podcast.mp3 · 16 kHz mono</span>
+    </div>
+
+    <div class="run-toolbar">
+      <button id="btn-add-config" class="btn btn-ghost" type="button" data-i18n="run.addConfig">+ Add config</button>
+      <button id="btn-default-compare" class="btn btn-ghost" type="button" data-i18n="run.reset">Reset to baseline vs silero</button>
+      <button id="btn-run" class="btn btn-primary" type="button" data-i18n="run.runBtn">Run benchmark</button>
+    </div>
+
+    <div id="configs-list" class="configs-list"></div>
+
+    <div class="run-status muted" id="run-status" data-i18n="run.idle">Idle.</div>
+  </section>
+
+  <!-- ─── Results ──────────────────────────────────────────── -->
+  <section class="panel results-panel" id="results-panel" hidden>
+    <header class="panel-head">
+      <h2 data-i18n="results.title">Results</h2>
+      <span class="muted" id="results-meta">–</span>
+    </header>
+
+    <div class="results-verdict" id="results-verdict" hidden>
+      <span class="verdict-label" data-i18n="verdict.label">Verdict</span>
+      <span class="verdict-text" id="verdict-text"></span>
+    </div>
+
+    <div class="results-summary" id="results-summary"></div>
+
+    <table class="results-table" id="results-table">
+      <thead>
+        <tr>
+          <th data-i18n="table.config">Config</th>
+          <th data-i18n="table.vad">VAD</th>
+          <th class="num"><span data-i18n="table.wer">WER</span> <span class="th-arrow">↓</span><button type="button" class="tip" data-tip-key="wer" aria-label="What is WER?">?</button></th>
+          <th class="num"><span data-i18n="table.cer">CER</span> <span class="th-arrow">↓</span><button type="button" class="tip" data-tip-key="cer" aria-label="What is CER?">?</button></th>
+          <th class="num"><span data-i18n="table.rtf">RTF</span><button type="button" class="tip" data-tip-key="rtf" aria-label="What is RTF?">?</button></th>
+          <th class="num"><span data-i18n="table.runtime">Runtime</span><button type="button" class="tip" data-tip-key="runtime" aria-label="What is runtime?">?</button></th>
+          <th class="num"><span data-i18n="table.silence">Silence removed</span><button type="button" class="tip" data-tip-key="silence" aria-label="What is silence removed?">?</button></th>
+          <th class="num"><span data-i18n="table.segments">Segments</span><button type="button" class="tip" data-tip-key="segments" aria-label="What are segments?">?</button></th>
+          <th data-i18n="table.model">Model</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <div class="best-line muted" id="best-line"></div>
+
+    <div class="config-detail" id="config-detail"></div>
+  </section>
+
+  <!-- ─── History ──────────────────────────────────────────── -->
+  <section class="panel history-panel" id="history-panel" hidden>
+    <header class="panel-head">
+      <h2 data-i18n="history.title">Run history</h2>
+      <span class="muted" data-i18n="history.sub">Newest first · up to 50 runs</span>
+    </header>
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th data-i18n="history.colWhen">When</th>
+          <th class="num" data-i18n="history.colConfigs">Configs</th>
+          <th data-i18n="history.colBestWer">Best WER</th>
+          <th data-i18n="history.colBestCer">Best CER</th>
+          <th class="num" data-i18n="history.colRuntime">Total runtime</th>
+          <th class="num" data-i18n="history.colAudio">Audio</th>
+        </tr>
+      </thead>
+      <tbody id="history-body"></tbody>
+    </table>
+  </section>
+
+  <!-- ─── System Resources (moved to bottom, secondary) ─────── -->
+  <section class="panel sysmon-panel sysmon-compact">
+    <header class="panel-head panel-head-muted">
+      <h2 data-i18n="sysmon.title">System resources</h2>
       <span class="muted" id="sysmon-updated">–</span>
     </header>
     <div class="sysmon-grid" id="sysmon-grid">
@@ -112,96 +196,9 @@
     </div>
   </section>
 
-  <!-- ─── Audio player ─────────────────────────────────────── -->
-  <section class="panel audio-panel">
-    <header class="panel-head">
-      <h2>Audio under test</h2>
-      <span class="muted" id="audio-meta">podcast.mp3 · 16 kHz mono · –</span>
-    </header>
-    <audio id="audio-player" controls preload="metadata" src="/api/audio"></audio>
-  </section>
-
-  <!-- ─── Run panel (the configurable surface) ─────────────── -->
-  <section class="panel run-panel">
-    <header class="panel-head">
-      <h2>Run benchmark</h2>
-      <span class="muted">Configure each config's VAD knobs, then click Run.</span>
-    </header>
-
-    <div class="run-toolbar">
-      <button id="btn-add-config" class="btn btn-ghost" type="button">+ Add config</button>
-      <button id="btn-default-compare" class="btn btn-ghost" type="button">Reset to baseline vs silero</button>
-      <button id="btn-run" class="btn btn-primary" type="button">Run benchmark</button>
-    </div>
-
-    <div id="configs-list" class="configs-list"></div>
-
-    <div class="run-status muted" id="run-status">Idle.</div>
-  </section>
-
-  <!-- ─── Results ──────────────────────────────────────────── -->
-  <section class="panel results-panel" id="results-panel" hidden>
-    <header class="panel-head">
-      <h2>Results</h2>
-      <span class="muted" id="results-meta">–</span>
-    </header>
-
-    <div class="results-summary" id="results-summary"></div>
-
-    <table class="results-table" id="results-table">
-      <thead>
-        <tr>
-          <th>Config</th>
-          <th>VAD</th>
-          <th class="num">WER <span class="th-arrow">↓</span><button type="button" class="tip" aria-label="What is WER?" data-tip="Word Error Rate vs the reference transcript. Lower is better. The reference is a YouTube auto-transcript, not gold &mdash; compare configs against each other, not to an absolute target.">?</button></th>
-          <th class="num">CER <span class="th-arrow">↓</span><button type="button" class="tip" aria-label="What is CER?" data-tip="Character Error Rate. Like WER, but on individual characters &mdash; more robust to Indonesian word-segmentation differences.">?</button></th>
-          <th class="num">RTF<button type="button" class="tip" aria-label="What is RTF?" data-tip="Real-Time Factor = runtime &divide; audio length. Below 1.0 means faster than real-time. Above 1.0 is slower than real-time and may need a smaller model or a faster device.">?</button></th>
-          <th class="num">Runtime<button type="button" class="tip" aria-label="What is runtime?" data-tip="Wall-clock seconds for the full whisper-cli invocation, including VAD pre-processing when enabled.">?</button></th>
-          <th class="num">Silence removed<button type="button" class="tip" aria-label="What is silence removed?" data-tip="Share of audio that VAD dropped as silence. Higher means more aggressive trimming &mdash; but too aggressive can also drop real speech. Compare WER alongside this number, not in isolation.">?</button></th>
-          <th class="num">Segments<button type="button" class="tip" aria-label="What are segments?" data-tip="Number of speech regions VAD found in the audio. Not 'good' or 'bad' on its own &mdash; depends on the speaker's style.">?</button></th>
-          <th>Model</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-
-    <div class="best-line muted" id="best-line"></div>
-
-    <div class="config-detail" id="config-detail"></div>
-  </section>
-
-  <!-- ─── History ──────────────────────────────────────────── -->
-  <section class="panel history-panel" id="history-panel" hidden>
-    <header class="panel-head">
-      <h2>Run history</h2>
-      <span class="muted">Newest first · up to 50 runs</span>
-    </header>
-    <table class="history-table">
-      <thead>
-        <tr>
-          <th>When</th>
-          <th class="num">Configs</th>
-          <th>Best WER</th>
-          <th>Best CER</th>
-          <th class="num">Total runtime</th>
-          <th class="num">Audio</th>
-        </tr>
-      </thead>
-      <tbody id="history-body"></tbody>
-    </table>
-  </section>
-
   <footer class="footer muted">
-    <p>
-      VAD benchmark for <code>ai4db</code>'s Whisper + Silero VAD pipeline on Indonesian audio.
-      Compares <strong>vad enabled vs disabled</strong> via <code>whisper-cli</code>'s built-in
-      <code>--vad --vad-model</code> flags.
-    </p>
-    <p>
-      Caveats: ground truth is a YouTube auto-transcript — WER is <em>relative</em> between
-      configs, not absolute accuracy. <code>tiny.id</code> is a small model — the
-      <strong>VAD on/off delta</strong> is the real signal, not the raw number.
-    </p>
+    <p data-i18n="footer.line1">VAD benchmark for <code>ai4db</code>'s Whisper + Silero VAD pipeline on Indonesian audio. Compares <strong>vad enabled vs disabled</strong> via <code>whisper-cli</code>'s built-in <code>--vad --vad-model</code> flags.</p>
+    <p data-i18n="footer.line2">Caveats: ground truth is a YouTube auto-transcript — WER is <em>relative</em> between configs, not absolute accuracy. <code>tiny.id</code> is a small model — the <strong>VAD on/off delta</strong> is the real signal, not the raw number.</p>
   </footer>
 </main>
 

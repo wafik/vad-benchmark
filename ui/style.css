@@ -85,6 +85,25 @@ body {
 }
 .last-run { color: var(--text-muted); font-size: 12px; font-family: var(--mono); }
 
+/* Language toggle (topbar) */
+.lang-toggle {
+  display: inline-flex; align-items: stretch;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-alt); overflow: hidden;
+  font-family: var(--mono); font-size: 11px;
+}
+.lang-btn {
+  background: transparent; border: none; cursor: pointer;
+  padding: 4px 10px; color: var(--text-muted);
+  font-family: inherit; font-size: inherit; font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.lang-btn + .lang-btn { border-left: 1px solid var(--border); }
+.lang-btn:hover { color: var(--text); }
+.lang-btn.is-active {
+  background: var(--accent); color: white; font-weight: 600;
+}
+
 /* ─── Layout ─────────────────────────────────────────────── */
 .container {
   max-width: 1200px; margin: 0 auto;
@@ -341,6 +360,42 @@ body {
   font-family: var(--mono); margin-top: 8px; flex-wrap: wrap;
 }
 .diff-legend span::before { content: "• "; }
+
+/* ─── Audio inline (inside Run panel) ────────────────────── */
+.audio-inline {
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 22px 14px;
+}
+.audio-inline audio { flex: 1; min-width: 0; }
+.audio-inline #audio-meta { font-family: var(--mono); font-size: 11px; flex-shrink: 0; }
+
+/* ─── Results: verdict block ──────────────────────────────── */
+.results-verdict {
+  margin: 0 22px 14px;
+  padding: 12px 14px;
+  background: var(--accent-light);
+  border: 1px solid rgba(90,122,106,0.25);
+  border-radius: var(--radius-sm);
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 13px; line-height: 1.55;
+}
+.results-verdict .verdict-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--accent); font-family: var(--mono); font-weight: 600;
+}
+.results-verdict .verdict-text { color: var(--text); }
+
+/* ─── System resources (compact, bottom) ─────────────────── */
+.sysmon-compact { padding: 0; }
+.sysmon-compact .panel-head-muted { padding: 10px 22px 6px; }
+.sysmon-compact .panel-head-muted h2 {
+  color: var(--text-muted); font-size: 12px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.sysmon-compact .sysmon-card { padding: 8px 14px 10px; }
+.sysmon-compact .sysmon-head { margin-bottom: 4px; }
+.sysmon-compact .sysmon-value { font-size: 12px; }
+.sysmon-compact .sysmon-label { font-size: 10px; }
 
 /* ─── Footer ─────────────────────────────────────────────── */
 .footer {

@@ -4,33 +4,277 @@
 const $  = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+// ─── i18n ───────────────────────────────────────────────────
+const I18N = {
+  en: {
+    "topbar.title":         "VAD Benchmark",
+    "topbar.sub":           "ai4db · Indonesian · Silero VAD vs none",
+    "stepper.1":            "Configure",
+    "stepper.2":            "Run",
+    "stepper.3":            "Compare results",
+    "audio.title":          "Audio under test",
+    "audio.meta":           "podcast.mp3 · 16 kHz mono",
+    "run.title":            "Run benchmark",
+    "run.sub":              "Configure each config's VAD knobs, then click Run.",
+    "run.addConfig":        "+ Add config",
+    "run.reset":            "Reset to baseline vs silero",
+    "run.runBtn":           "Run benchmark",
+    "run.running":          "Running…",
+    "run.idle":             "Idle.",
+    "run.started":          "Started.",
+    "run.submitting":       "Submitting…",
+    "run.failed":           "Failed: ",
+    "run.alreadyRunning":   "Already running — wait for it to finish.",
+    "run.emptyAlert":       "Add at least one config.",
+    "run.staleNote":        " · (looks stuck — already-running lock older than stale threshold)",
+    "run.runningPrefix":    "Running · ",
+    "run.donePrefix":       "Done · ",
+    "run.errorPrefix":      "Error: ",
+    "field.whisper":        "Whisper model",
+    "field.language":       "Language",
+    "field.threads":        "Threads",
+    "field.vadThreshold":   "VAD threshold",
+    "field.minSpeech":      "Min speech (ms)",
+    "field.minSilence":     "Min silence (ms)",
+    "field.speechPad":      "Speech pad (ms)",
+    "field.maxSpeech":      "Max speech (s, 0=∞)",
+    "field.vadOn":          "VAD on",
+    "field.vadOff":         "VAD off",
+    "field.remove":         "remove",
+    "results.title":        "Results",
+    "results.metaFmt":      "{audio}s audio · {n} configs · last {ts}",
+    "results.bestLineFmt":  "Best WER: {wer} ({werV:.3f}). Best CER: {cer} ({cerV:.3f}). Fastest: {fast}.",
+    "tile.bestWer":         "Best WER",
+    "tile.bestCer":         "Best CER",
+    "tile.fastestRtf":      "Fastest RTF",
+    "tile.totalRuntime":    "Total runtime",
+    "table.config":         "Config",
+    "table.vad":            "VAD",
+    "table.wer":            "WER",
+    "table.cer":            "CER",
+    "table.rtf":            "RTF",
+    "table.runtime":        "Runtime",
+    "table.silence":        "Silence removed",
+    "table.segments":       "Segments",
+    "table.model":          "Model",
+    "verdict.label":        "Verdict",
+    "verdict.empty":        "(no verdict for this run)",
+    "diff.title":           "Diff vs reference",
+    "diff.legend.eq":       "equal",
+    "diff.legend.sub":      "substitute",
+    "diff.legend.ins":      "insert",
+    "diff.legend.del":      "delete",
+    "diff.transcriptFmt":   "Transcript — {name} (VAD {vad})",
+    "diff.emptyTranscript": "(empty)",
+    "diff.noReference":     "(no reference text)",
+    "history.title":        "Run history",
+    "history.sub":          "Newest first · up to 50 runs",
+    "history.colWhen":      "When",
+    "history.colConfigs":   "Configs",
+    "history.colBestWer":   "Best WER",
+    "history.colBestCer":   "Best CER",
+    "history.colRuntime":   "Total runtime",
+    "history.colAudio":     "Audio",
+    "sysmon.title":         "System resources",
+    "sysmon.cores":         " cores",
+    "sysmon.ramFmt":        "{used} / {total} MB",
+    "sysmon.gpuFmt":        "{name} · {used}/{total} MB",
+    "sysmon.gpuNone":       "no NVIDIA GPU",
+    "sysmon.tempNone":      "no sensor",
+    "topbar.vadOn":         "VAD on (default)",
+    "topbar.vadOff":        "VAD off (default)",
+    "footer.line1":         "VAD benchmark for <code>ai4db</code>'s Whisper + Silero VAD pipeline on Indonesian audio. Compares <strong>vad enabled vs disabled</strong> via <code>whisper-cli</code>'s built-in <code>--vad --vad-model</code> flags.",
+    "footer.line2":         "Caveats: ground truth is a YouTube auto-transcript — WER is <em>relative</em> between configs, not absolute accuracy. <code>tiny.id</code> is a small model — the <strong>VAD on/off delta</strong> is the real signal, not the raw number.",
+    // Tooltips (the ? button labels)
+    "tip.wer":              "Word Error Rate vs the reference transcript. Lower is better. The reference is a YouTube auto-transcript, not gold — compare configs against each other, not to an absolute target.",
+    "tip.cer":              "Character Error Rate. Like WER, but on individual characters — more robust to Indonesian word-segmentation differences.",
+    "tip.rtf":              "Real-Time Factor = runtime ÷ audio length. Below 1.0 means faster than real-time. Above 1.0 is slower than real-time and may need a smaller model or a faster device.",
+    "tip.runtime":          "Wall-clock seconds for the full whisper-cli invocation, including VAD pre-processing when enabled.",
+    "tip.silence":          "Share of audio that VAD dropped as silence. Higher means more aggressive trimming — but too aggressive can also drop real speech. Compare WER alongside this number, not in isolation.",
+    "tip.segments":         "Number of speech regions VAD found in the audio. Not 'good' or 'bad' on its own — depends on the speaker's style.",
+    "tip.totalRuntime":     "Sum of wall-clock seconds across all configs in this run (not the audio length).",
+    "aria.wer":             "What is WER?",
+    "aria.cer":             "What is CER?",
+    "aria.rtf":             "What is RTF?",
+    "aria.runtime":         "What is runtime?",
+    "aria.silence":         "What is silence removed?",
+    "aria.segments":        "What are segments?",
+    "aria.totalRuntime":    "What is total runtime?",
+  },
+  id: {
+    "topbar.title":         "VAD Benchmark",
+    "topbar.sub":           "ai4db · Bahasa Indonesia · Silero VAD vs tanpa",
+    "stepper.1":            "Konfigurasi",
+    "stepper.2":            "Jalankan",
+    "stepper.3":            "Bandingkan hasil",
+    "audio.title":          "Audio yang diuji",
+    "audio.meta":           "podcast.mp3 · 16 kHz mono",
+    "run.title":            "Jalankan benchmark",
+    "run.sub":              "Atur knob VAD tiap config, lalu klik Jalankan.",
+    "run.addConfig":        "+ Tambah config",
+    "run.reset":            "Reset ke baseline vs silero",
+    "run.runBtn":           "Jalankan benchmark",
+    "run.running":          "Menjalankan…",
+    "run.idle":             "Siap.",
+    "run.started":          "Dimulai.",
+    "run.submitting":       "Mengirim…",
+    "run.failed":           "Gagal: ",
+    "run.alreadyRunning":   "Sudah berjalan — tunggu sampai selesai.",
+    "run.emptyAlert":       "Tambahkan minimal satu config.",
+    "run.staleNote":        " · (terlihat macet — lock berjalan terlalu lama)",
+    "run.runningPrefix":    "Berjalan · ",
+    "run.donePrefix":       "Selesai · ",
+    "run.errorPrefix":      "Error: ",
+    "field.whisper":        "Model Whisper",
+    "field.language":       "Bahasa",
+    "field.threads":        "Thread",
+    "field.vadThreshold":   "Ambang VAD",
+    "field.minSpeech":      "Min speech (ms)",
+    "field.minSilence":     "Min silence (ms)",
+    "field.speechPad":      "Speech pad (ms)",
+    "field.maxSpeech":      "Max speech (s, 0=∞)",
+    "field.vadOn":          "VAD nyala",
+    "field.vadOff":         "VAD mati",
+    "field.remove":         "hapus",
+    "results.title":        "Hasil",
+    "results.metaFmt":      "{audio}s audio · {n} config · terakhir {ts}",
+    "results.bestLineFmt":  "WER terbaik: {wer} ({werV:.3f}). CER terbaik: {cer} ({cerV:.3f}). Tercepat: {fast}.",
+    "tile.bestWer":         "WER terbaik",
+    "tile.bestCer":         "CER terbaik",
+    "tile.fastestRtf":      "RTF tercepat",
+    "tile.totalRuntime":    "Total runtime",
+    "table.config":         "Config",
+    "table.vad":            "VAD",
+    "table.wer":            "WER",
+    "table.cer":            "CER",
+    "table.rtf":            "RTF",
+    "table.runtime":        "Runtime",
+    "table.silence":        "Silence dihapus",
+    "table.segments":       "Segmen",
+    "table.model":          "Model",
+    "verdict.label":        "Kesimpulan",
+    "verdict.empty":        "(tidak ada kesimpulan untuk run ini)",
+    "diff.title":           "Selisih vs referensi",
+    "diff.legend.eq":       "sama",
+    "diff.legend.sub":      "substitusi",
+    "diff.legend.ins":      "sisipan",
+    "diff.legend.del":      "hapus",
+    "diff.transcriptFmt":   "Transkrip — {name} (VAD {vad})",
+    "diff.emptyTranscript": "(kosong)",
+    "diff.noReference":     "(tidak ada teks referensi)",
+    "history.title":        "Riwayat run",
+    "history.sub":          "Terbaru dulu · sampai 50 run",
+    "history.colWhen":      "Waktu",
+    "history.colConfigs":   "Config",
+    "history.colBestWer":   "WER terbaik",
+    "history.colBestCer":   "CER terbaik",
+    "history.colRuntime":   "Total runtime",
+    "history.colAudio":     "Audio",
+    "sysmon.title":         "Resource sistem",
+    "sysmon.cores":         " core",
+    "sysmon.ramFmt":        "{used} / {total} MB",
+    "sysmon.gpuFmt":        "{name} · {used}/{total} MB",
+    "sysmon.gpuNone":       "tidak ada GPU NVIDIA",
+    "sysmon.tempNone":      "tanpa sensor",
+    "topbar.vadOn":         "VAD nyala (default)",
+    "topbar.vadOff":        "VAD mati (default)",
+    "footer.line1":         "Benchmark VAD untuk pipeline Whisper + Silero VAD milik <code>ai4db</code> pada audio Bahasa Indonesia. Membandingkan <strong>vad nyala vs mati</strong> lewat flag bawaan <code>whisper-cli</code>: <code>--vad --vad-model</code>.",
+    "footer.line2":         "Catatan: ground truth adalah auto-transkrip YouTube — WER bersifat <em>relatif</em> antar config, bukan akurasi absolut. <code>tiny.id</code> adalah model kecil — yang jadi sinyal sebenarnya adalah <strong>selisih VAD on/off</strong>, bukan angka mentahnya.",
+    "tip.wer":              "Word Error Rate vs transkrip referensi. Semakin rendah semakin baik. Referensi adalah auto-transkrip YouTube, bukan gold — bandingkan config satu sama lain, bukan ke target absolut.",
+    "tip.cer":              "Character Error Rate. Seperti WER, tapi dihitung per karakter — lebih tahan terhadap perbedaan segmentasi kata Bahasa Indonesia.",
+    "tip.rtf":              "Real-Time Factor = runtime ÷ panjang audio. Di bawah 1.0 berarti lebih cepat dari real-time. Di atas 1.0 lebih lambat dari real-time — mungkin perlu model lebih kecil atau device lebih cepat.",
+    "tip.runtime":          "Detik wall-clock untuk seluruh pemanggilan whisper-cli, termasuk praproses VAD saat diaktifkan.",
+    "tip.silence":          "Bagian audio yang dibuang VAD sebagai silence. Lebih tinggi berarti trimming lebih agresif — tapi terlalu agresif bisa memotong ucapan asli. Bandingkan bersama WER, jangan sendirian.",
+    "tip.segments":         "Jumlah region bicara yang ditemukan VAD. Bukan 'baik' atau 'buruk' dengan sendirinya — tergantung gaya pembicara.",
+    "tip.totalRuntime":     "Jumlah detik wall-clock untuk semua config dalam run ini (bukan panjang audio).",
+    "aria.wer":             "Apa itu WER?",
+    "aria.cer":             "Apa itu CER?",
+    "aria.rtf":             "Apa itu RTF?",
+    "aria.runtime":         "Apa itu runtime?",
+    "aria.silence":         "Apa itu silence dihapus?",
+    "aria.segments":        "Apa itu segmen?",
+    "aria.totalRuntime":    "Apa itu total runtime?",
+  },
+};
+
 // ─── State ──────────────────────────────────────────────────
-let CFG = null;            // runtime config from /api/config
-let MODELS = [];           // available .bin files
-let LAST_SUMMARY = null;   // latest /api/summary
+let LANG = "id";                     // default ID
+let CFG = null;                      // runtime config from /api/config
+let MODELS = [];                     // available .bin files
+let LAST_SUMMARY = null;             // latest /api/summary
 let RUNNING = false;
 let sseSource = null;
 
-// Default 2-config comparison (mirrors scripts/run_benchmark.py)
 const DEFAULT_CONFIGS = () => ([
   { name: "baseline_novad", overrides: { vad_enabled: false } },
   { name: "silero_vad",     overrides: { vad_enabled: true  } },
 ]);
 
+// ─── i18n helpers ───────────────────────────────────────────
+function t(key) { return (I18N[LANG] && I18N[LANG][key]) || (I18N.en[key]) || key; }
+
+function setLanguage(lang) {
+  if (!I18N[lang]) return;
+  LANG = lang;
+  try { localStorage.setItem("vad-bench.lang", lang); } catch {}
+  $$(".lang-toggle [data-lang]").forEach(b => {
+    b.classList.toggle("is-active", b.dataset.lang === lang);
+  });
+  applyLanguage();
+}
+
+function applyLanguage() {
+  // Plain text nodes with data-i18n
+  $$("[data-i18n]").forEach(el => {
+    const k = el.getAttribute("data-i18n");
+    if (!k) return;
+    const val = t(k);
+    // Some values contain inline HTML (footer lines).
+    if (val.indexOf("<") !== -1) el.innerHTML = val;
+    else el.textContent = val;
+  });
+
+  // Tooltip buttons: switch data-tip + aria-label
+  $$(".tip[data-tip-key]").forEach(btn => {
+    const k = btn.getAttribute("data-tip-key");
+    btn.setAttribute("data-tip", t("tip." + k));
+    btn.setAttribute("aria-label", t("aria." + k));
+  });
+
+  // Re-render dynamic parts so they pick up the new language.
+  if (LAST_SUMMARY) renderResults(LAST_SUMMARY);
+  refreshHistory().catch(() => {});
+  refreshBadges();
+}
+
+function refreshBadges() {
+  if (!CFG) return;
+  $("#vad-badge-text").textContent = CFG.vad_enabled ? t("topbar.vadOn") : t("topbar.vadOff");
+}
+
 // ─── Init ───────────────────────────────────────────────────
 async function init() {
+  try { LANG = localStorage.getItem("vad-bench.lang") || "id"; } catch {}
+  applyLanguage();                     // first pass on static DOM
   await Promise.all([loadConfig(), loadModels(), refreshSystem()]);
   pollSystem();
   openSSE();
-  // Render run panel.
   renderConfigs(DEFAULT_CONFIGS());
-  // Try to load last results if present.
   await tryLoadLastResults();
   await refreshHistory();
   wireFlowStepper();
+  wireLangToggle();
 }
 
-// ─── Flow stepper (3-step guide above the panels) ──────────
+// ─── Language toggle (topbar) ───────────────────────────────
+function wireLangToggle() {
+  $$(".lang-toggle [data-lang]").forEach(btn => {
+    btn.classList.toggle("is-active", btn.dataset.lang === LANG);
+    btn.addEventListener("click", () => setLanguage(btn.dataset.lang));
+  });
+}
+
+// ─── Flow stepper ───────────────────────────────────────────
 function wireFlowStepper() {
   $$("#flow-stepper .flow-step-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -51,10 +295,7 @@ function updateStepper(stage) {
 async function loadConfig() {
   CFG = await fetch("/api/config").then(r => r.json());
   $("#model-badge-text").textContent = CFG.whisper_model;
-  const vad = $("#vad-badge");
-  vad.classList.toggle("is-on",  CFG.vad_enabled);
-  vad.classList.toggle("is-off", !CFG.vad_enabled);
-  $("#vad-badge-text").textContent = CFG.vad_enabled ? "VAD on (default)" : "VAD off (default)";
+  refreshBadges();
 }
 
 async function loadModels() {
@@ -74,11 +315,17 @@ async function refreshSystem() {
   try {
     const s = await fetch("/api/system").then(r => r.json());
     setSysmon("cpu",      s.cpu_percent, s.cpu_count,  "%", 100);
-    setSysmon("ram",      s.ram_percent, null,         "%", 100, `${s.ram_used_mb.toFixed(0)} / ${s.ram_total_mb.toFixed(0)} MB`);
-    setSysmon("cputemp",  s.cpu_temp_c,  null,         "°C", 100, s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)} °C` : "no sensor");
+    setSysmon("ram",      s.ram_percent, null,         "%", 100,
+              t("sysmon.ramFmt").replace("{used}", s.ram_used_mb.toFixed(0)).replace("{total}", s.ram_total_mb.toFixed(0)));
+    setSysmon("cputemp",  s.cpu_temp_c,  null,         "°C", 100,
+              s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)} °C` : t("sysmon.tempNone"));
     const gpu = (s.gpus && s.gpus[0]) || null;
     setSysmon("gpu", gpu ? gpu.util_percent : null, null, "%", 100,
-              gpu ? `${gpu.name} · ${(gpu.mem_used_mb ?? 0).toFixed(0)}/${(gpu.mem_total_mb ?? 0).toFixed(0)} MB` : "no NVIDIA GPU");
+              gpu ? t("sysmon.gpuFmt")
+                    .replace("{name}", gpu.name)
+                    .replace("{used}", (gpu.mem_used_mb ?? 0).toFixed(0))
+                    .replace("{total}", (gpu.mem_total_mb ?? 0).toFixed(0))
+                  : t("sysmon.gpuNone"));
     $("#sysmon-updated").textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : "–";
   } catch (e) { /* swallow */ }
 }
@@ -87,7 +334,8 @@ function setSysmon(metric, value, count, unit, max, sub) {
   $(`#sysmon-${metric === "cputemp" ? "cputemp" : metric}-val`).textContent = val;
   const pct = value == null ? 0 : Math.min(100, (value / max) * 100);
   $(`#sysmon-${metric === "cputemp" ? "cputemp" : metric}-bar`).style.width = pct + "%";
-  $(`#sysmon-${metric === "cputemp" ? "cputemp" : metric}-sub`).textContent = sub || (count ? `${count} cores` : "");
+  $(`#sysmon-${metric === "cputemp" ? "cputemp" : metric}-sub`).textContent =
+    sub || (count ? `${count}${t("sysmon.cores")}` : "");
 }
 
 // ─── SSE progress ──────────────────────────────────────────
@@ -112,27 +360,26 @@ function onProgress(status) {
     const cur = status.current ? status.current.name : "—";
     const done = (status.completed || []).length;
     const total = status.total || "?";
-    el.textContent = `Running · ${done}/${total} · now: ${cur}${status.stale ? " · (looks stuck — already-running lock older than stale threshold)" : ""}`;
+    el.textContent = `${t("run.runningPrefix")}${done}/${total} · now: ${cur}${status.stale ? t("run.staleNote") : ""}`;
     $("#btn-run").disabled = true;
-    $("#btn-run").textContent = "Running…";
+    $("#btn-run").textContent = t("run.running");
   } else {
     RUNNING = false;
     $("#btn-run").disabled = false;
-    $("#btn-run").textContent = "Run benchmark";
+    $("#btn-run").textContent = t("run.runBtn");
     if (status.error) {
       el.classList.add("is-error"); el.classList.remove("is-running");
-      el.textContent = `Error: ${status.error}`;
+      el.textContent = `${t("run.errorPrefix")}${status.error}`;
       updateStepper(LAST_SUMMARY ? 3 : 1);
     } else if (status.finished_at) {
       el.classList.remove("is-error", "is-running");
       const done = (status.completed || []).length;
-      el.textContent = `Done · ${done} configs · ${status.finished_at}`;
-      // Refresh results + history.
+      el.textContent = `${t("run.donePrefix")}${done} configs · ${status.finished_at}`;
       tryLoadLastResults();
       refreshHistory();
     } else {
       el.classList.remove("is-error", "is-running");
-      el.textContent = "Idle.";
+      el.textContent = t("run.idle");
       updateStepper(LAST_SUMMARY ? 3 : 1);
     }
   }
@@ -155,13 +402,13 @@ function configCard(cfg, index) {
       <input class="config-name-input" type="text" value="${escapeAttr(cfg.name)}" placeholder="config name" />
       <button class="config-vad-toggle ${vadOn ? "is-on" : ""}" data-role="vad-toggle">
         <span class="toggle-dot"></span>
-        <span data-role="vad-label">${vadOn ? "VAD on" : "VAD off"}</span>
+        <span data-role="vad-label">${vadOn ? t("field.vadOn") : t("field.vadOff")}</span>
       </button>
-      <button class="btn-icon" data-role="remove" title="Remove this config">remove</button>
+      <button class="btn-icon" data-role="remove" title="${escapeAttr(t("field.remove"))}">${t("field.remove")}</button>
     </div>
     <div class="config-card-grid">
       <div class="field">
-        <span class="field-label">Whisper model</span>
+        <span class="field-label" data-i18n-key="field.whisper">${t("field.whisper")}</span>
         <select data-role="whisper_model">
           ${MODELS.length === 0
               ? `<option value="${escapeAttr(CFG.whisper_model)}">${escapeHtml(CFG.whisper_model)}</option>`
@@ -171,7 +418,7 @@ function configCard(cfg, index) {
         </select>
       </div>
       <div class="field">
-        <span class="field-label">Language</span>
+        <span class="field-label" data-i18n-key="field.language">${t("field.language")}</span>
         <select data-role="language">
           <option value="id"   ${(ov.language || CFG.language) === "id"   ? "selected" : ""}>id (Indonesian)</option>
           <option value="auto" ${(ov.language || CFG.language) === "auto" ? "selected" : ""}>auto</option>
@@ -179,40 +426,39 @@ function configCard(cfg, index) {
         </select>
       </div>
       <div class="field">
-        <span class="field-label">Threads</span>
+        <span class="field-label" data-i18n-key="field.threads">${t("field.threads")}</span>
         <input type="number" min="1" max="32" step="1" data-role="threads" value="${ov.threads ?? CFG.threads}" />
       </div>
       <div class="field">
-        <span class="field-label">VAD threshold <span class="field-value" data-role="vad_threshold_val">${ov.vad_threshold ?? CFG.vad_threshold}</span></span>
+        <span class="field-label"><span data-i18n-key="field.vadThreshold">${t("field.vadThreshold")}</span> <span class="field-value" data-role="vad_threshold_val">${ov.vad_threshold ?? CFG.vad_threshold}</span></span>
         <input type="range" min="0.10" max="0.90" step="0.05" data-role="vad_threshold" value="${ov.vad_threshold ?? CFG.vad_threshold}" ${vadOn ? "" : "disabled"} />
       </div>
       <div class="field">
-        <span class="field-label">Min speech (ms) <span class="field-value" data-role="vad_min_speech_ms_val">${ov.vad_min_speech_ms ?? CFG.vad_min_speech_ms}</span></span>
+        <span class="field-label"><span data-i18n-key="field.minSpeech">${t("field.minSpeech")}</span> <span class="field-value" data-role="vad_min_speech_ms_val">${ov.vad_min_speech_ms ?? CFG.vad_min_speech_ms}</span></span>
         <input type="range" min="50" max="1000" step="10" data-role="vad_min_speech_ms" value="${ov.vad_min_speech_ms ?? CFG.vad_min_speech_ms}" ${vadOn ? "" : "disabled"} />
       </div>
       <div class="field">
-        <span class="field-label">Min silence (ms) <span class="field-value" data-role="vad_min_silence_ms_val">${ov.vad_min_silence_ms ?? CFG.vad_min_silence_ms}</span></span>
+        <span class="field-label"><span data-i18n-key="field.minSilence">${t("field.minSilence")}</span> <span class="field-value" data-role="vad_min_silence_ms_val">${ov.vad_min_silence_ms ?? CFG.vad_min_silence_ms}</span></span>
         <input type="range" min="50" max="1000" step="10" data-role="vad_min_silence_ms" value="${ov.vad_min_silence_ms ?? CFG.vad_min_silence_ms}" ${vadOn ? "" : "disabled"} />
       </div>
       <div class="field">
-        <span class="field-label">Speech pad (ms) <span class="field-value" data-role="vad_speech_pad_ms_val">${ov.vad_speech_pad_ms ?? CFG.vad_speech_pad_ms}</span></span>
+        <span class="field-label"><span data-i18n-key="field.speechPad">${t("field.speechPad")}</span> <span class="field-value" data-role="vad_speech_pad_ms_val">${ov.vad_speech_pad_ms ?? CFG.vad_speech_pad_ms}</span></span>
         <input type="range" min="0" max="500" step="10" data-role="vad_speech_pad_ms" value="${ov.vad_speech_pad_ms ?? CFG.vad_speech_pad_ms}" ${vadOn ? "" : "disabled"} />
       </div>
       <div class="field">
-        <span class="field-label">Max speech (s, 0=∞)</span>
+        <span class="field-label" data-i18n-key="field.maxSpeech">${t("field.maxSpeech")}</span>
         <input type="number" min="0" step="1" data-role="vad_max_speech_s" value="${ov.vad_max_speech_s ?? CFG.vad_max_speech_s}" ${vadOn ? "" : "disabled"} />
       </div>
     </div>
   `;
 
-  // Wire up events
   const vadBtn = card.querySelector('[data-role="vad-toggle"]');
   const vadLabel = card.querySelector('[data-role="vad-label"]');
   const ranges = card.querySelectorAll('input[type="range"]');
   vadBtn.addEventListener("click", () => {
     const on = !vadBtn.classList.contains("is-on");
     vadBtn.classList.toggle("is-on", on);
-    vadLabel.textContent = on ? "VAD on" : "VAD off";
+    vadLabel.textContent = on ? t("field.vadOn") : t("field.vadOff");
     ranges.forEach(r => r.disabled = !on);
     card.querySelector('[data-role="vad_max_speech_s"]').disabled = !on;
   });
@@ -272,20 +518,20 @@ $("#btn-default-compare").addEventListener("click", () => renderConfigs(DEFAULT_
 
 $("#btn-run").addEventListener("click", async () => {
   const configs = collectConfigs();
-  if (configs.length === 0) { alert("Add at least one config."); return; }
+  if (configs.length === 0) { alert(t("run.emptyAlert")); return; }
   if (RUNNING) { return; }
-  $("#run-status").textContent = "Submitting…";
+  $("#run-status").textContent = t("run.submitting");
   $("#run-status").classList.remove("is-error"); $("#run-status").classList.add("is-running");
   try {
     const resp = await fetch(`/api/run?configs=${encodeURIComponent(JSON.stringify(configs))}`, { method: "POST" });
     const data = await resp.json();
     if (!data.ok && data.already_running) {
-      $("#run-status").textContent = "Already running — open Progress / wait for it to finish.";
+      $("#run-status").textContent = t("run.alreadyRunning");
     } else {
-      $("#run-status").textContent = "Started.";
+      $("#run-status").textContent = t("run.started");
     }
   } catch (e) {
-    $("#run-status").textContent = "Failed: " + e.message;
+    $("#run-status").textContent = t("run.failed") + e.message;
     $("#run-status").classList.add("is-error");
   }
 });
@@ -299,35 +545,56 @@ async function tryLoadLastResults() {
     renderResults(sum);
     $("#results-panel").hidden = false;
     $("#last-run").textContent = formatTs(sum.last_run);
-    $("#audio-meta").textContent = `podcast.mp3 · 16 kHz mono · ${(sum.audio_duration_s || 0).toFixed(1)}s`;
+    $("#audio-meta").textContent = `${t("audio.meta")} · ${(sum.audio_duration_s || 0).toFixed(1)}s`;
     if (!RUNNING) updateStepper(3);
   } catch (e) { /* no summary yet */ }
 }
 
 function renderResults(sum) {
-  $("#results-meta").textContent = `${(sum.audio_duration_s || 0).toFixed(1)}s audio · ${sum.configs.length} configs · last ${formatTs(sum.last_run)}`;
+  const metaFmt = t("results.metaFmt")
+    .replace("{audio}", (sum.audio_duration_s || 0).toFixed(1))
+    .replace("{n}", sum.configs.length)
+    .replace("{ts}", formatTs(sum.last_run));
+  $("#results-meta").textContent = metaFmt;
+
+  // Verdict (if any).
+  const verdictEl = $("#results-verdict");
+  if (sum.verdict) {
+    verdictEl.hidden = false;
+    $("#verdict-text").textContent = sum.verdict;
+  } else {
+    verdictEl.hidden = true;
+  }
+
   $("#results-summary").innerHTML = `
     <div class="summary-tile">
-      <div class="tile-label">Best WER<button type="button" class="tip" aria-label="What is WER?" data-tip="Word Error Rate vs the reference transcript. Lower is better. The reference is a YouTube auto-transcript, not gold &mdash; compare configs against each other, not to an absolute target.">?</button></div>
+      <div class="tile-label">${t("tile.bestWer")}<button type="button" class="tip" data-tip-key="wer" aria-label="${escapeAttr(t("aria.wer"))}">?</button></div>
       <div class="tile-value">${sum.best_wer_config || "–"}</div>
       <div class="tile-sub">${(minOf(sum.configs, "wer") ?? 0).toFixed(3)}</div>
     </div>
     <div class="summary-tile">
-      <div class="tile-label">Best CER<button type="button" class="tip" aria-label="What is CER?" data-tip="Character Error Rate. Like WER, but on individual characters &mdash; more robust to Indonesian word-segmentation differences.">?</button></div>
+      <div class="tile-label">${t("tile.bestCer")}<button type="button" class="tip" data-tip-key="cer" aria-label="${escapeAttr(t("aria.cer"))}">?</button></div>
       <div class="tile-value">${sum.best_cer_config || "–"}</div>
       <div class="tile-sub">${(minOf(sum.configs, "cer") ?? 0).toFixed(3)}</div>
     </div>
     <div class="summary-tile">
-      <div class="tile-label">Fastest RTF<button type="button" class="tip" aria-label="What is RTF?" data-tip="Real-Time Factor = runtime &divide; audio length. Below 1.0 means faster than real-time. Above 1.0 is slower than real-time and may need a smaller model or a faster device.">?</button></div>
+      <div class="tile-label">${t("tile.fastestRtf")}<button type="button" class="tip" data-tip-key="rtf" aria-label="${escapeAttr(t("aria.rtf"))}">?</button></div>
       <div class="tile-value">${sum.fastest_rtf_config || "–"}</div>
       <div class="tile-sub">${(minOf(sum.configs, "rtf") ?? 0).toFixed(3)}</div>
     </div>
     <div class="summary-tile">
-      <div class="tile-label">Total runtime<button type="button" class="tip" aria-label="What is total runtime?" data-tip="Sum of wall-clock seconds across all configs in this run (not the audio length).">?</button></div>
+      <div class="tile-label">${t("tile.totalRuntime")}<button type="button" class="tip" data-tip-key="totalRuntime" aria-label="${escapeAttr(t("aria.totalRuntime"))}">?</button></div>
       <div class="tile-value">${(sum.total_runtime_s || 0).toFixed(1)}s</div>
-      <div class="tile-sub">${sum.configs.length} configs</div>
+      <div class="tile-sub">${sum.configs.length} ${LANG === "id" ? "config" : "configs"}</div>
     </div>
   `;
+
+  // Re-bind tooltip text from current language.
+  $$(".tip[data-tip-key]").forEach(btn => {
+    const k = btn.getAttribute("data-tip-key");
+    btn.setAttribute("data-tip", t("tip." + k));
+    btn.setAttribute("aria-label", t("aria." + k));
+  });
 
   const tbody = $("#results-table tbody");
   tbody.innerHTML = "";
@@ -358,12 +625,13 @@ function renderResults(sum) {
     tbody.appendChild(tr);
   });
 
-  $("#best-line").textContent =
-    `Best WER: ${sum.best_wer_config} (${bestWer?.toFixed(3) ?? "–"}). ` +
-    `Best CER: ${sum.best_cer_config} (${bestCer?.toFixed(3) ?? "–"}). ` +
-    `Fastest: ${sum.fastest_rtf_config}.`;
+  $("#best-line").textContent = t("results.bestLineFmt")
+    .replace("{wer}", sum.best_wer_config || "–")
+    .replace("{werV}", bestWer ?? 0)
+    .replace("{cer}", sum.best_cer_config || "–")
+    .replace("{cerV}", bestCer ?? 0)
+    .replace("{fast}", sum.fastest_rtf_config || "–");
 
-  // Auto-select first row.
   if (sum.configs.length > 0) selectConfig(sum.configs[0].config);
 }
 
@@ -383,24 +651,24 @@ function renderDetail(d) {
   const root = $("#config-detail");
   root.innerHTML = `
     <div class="diff-block">
-      <h3>Transcript — ${escapeHtml(d.config)} (VAD ${d.vad_enabled ? "on" : "off"})</h3>
-      <div class="diff-stream">${escapeHtml(d.transcript_raw || "(empty)")}</div>
+      <h3>${t("diff.transcriptFmt").replace("{name}", escapeHtml(d.config)).replace("{vad}", d.vad_enabled ? t("field.vadOn") : t("field.vadOff"))}</h3>
+      <div class="diff-stream">${escapeHtml(d.transcript_raw || t("diff.emptyTranscript"))}</div>
     </div>
     <div class="diff-block">
-      <h3>Diff vs reference</h3>
+      <h3>${t("diff.title")}</h3>
       <div class="diff-stream">${renderAlignment(d.alignment || [])}</div>
       <div class="diff-legend">
-        <span class="diff-eq">equal</span>
-        <span class="diff-sub">substitute</span>
-        <span class="diff-ins">insert</span>
-        <span class="diff-del">delete</span>
+        <span class="diff-eq">${t("diff.legend.eq")}</span>
+        <span class="diff-sub">${t("diff.legend.sub")}</span>
+        <span class="diff-ins">${t("diff.legend.ins")}</span>
+        <span class="diff-del">${t("diff.legend.del")}</span>
       </div>
     </div>
   `;
 }
 
 function renderAlignment(parts) {
-  if (!parts.length) return "<span class='muted'>(no reference text)</span>";
+  if (!parts.length) return `<span class='muted'>${t("diff.noReference")}</span>`;
   return parts.map(p => {
     if (p.kind === "equal") return `<span class="diff-eq">${escapeHtml(p.ref || p.hyp || "")}</span>`;
     if (p.kind === "substitute") return `<span class="diff-sub">${escapeHtml(p.hyp || p.ref)}</span>`;
@@ -444,7 +712,7 @@ function maxOf(arr, key) { return arr.reduce((m, x) => x[key] > m ? x[key] : m, 
 function isRtfRealTime(rtf) { return typeof rtf === "number" && rtf < 1.0; }
 function colorClsRelative(value, best, worst) {
   if (value == null || best == null || worst == null) return "";
-  if (best === worst) return "";                    // ties → no coloring
+  if (best === worst) return "";
   if (value === best)  return "is-good";
   if (value === worst) return "is-bad";
   return "";
