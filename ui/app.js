@@ -27,6 +27,25 @@ async function init() {
   // Try to load last results if present.
   await tryLoadLastResults();
   await refreshHistory();
+  wireFlowStepper();
+}
+
+// ─── Flow stepper (3-step guide above the panels) ──────────
+function wireFlowStepper() {
+  $$("#flow-stepper .flow-step-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const target = document.getElementById(btn.dataset.stepTarget);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
+function updateStepper(stage) {
+  $$("#flow-stepper .flow-step").forEach(li => {
+    const s = Number(li.dataset.stage);
+    li.classList.toggle("is-active", s === stage);
+    li.classList.toggle("is-done", s < stage);
+  });
 }
 
 async function loadConfig() {
@@ -88,6 +107,7 @@ function onProgress(status) {
   const el = $("#run-status");
   if (status.running) {
     RUNNING = true;
+    updateStepper(2);
     el.classList.add("is-running"); el.classList.remove("is-error");
     const cur = status.current ? status.current.name : "—";
     const done = (status.completed || []).length;
@@ -102,6 +122,7 @@ function onProgress(status) {
     if (status.error) {
       el.classList.add("is-error"); el.classList.remove("is-running");
       el.textContent = `Error: ${status.error}`;
+      updateStepper(LAST_SUMMARY ? 3 : 1);
     } else if (status.finished_at) {
       el.classList.remove("is-error", "is-running");
       const done = (status.completed || []).length;
@@ -112,6 +133,7 @@ function onProgress(status) {
     } else {
       el.classList.remove("is-error", "is-running");
       el.textContent = "Idle.";
+      updateStepper(LAST_SUMMARY ? 3 : 1);
     }
   }
 }
@@ -278,6 +300,7 @@ async function tryLoadLastResults() {
     $("#results-panel").hidden = false;
     $("#last-run").textContent = formatTs(sum.last_run);
     $("#audio-meta").textContent = `podcast.mp3 · 16 kHz mono · ${(sum.audio_duration_s || 0).toFixed(1)}s`;
+    if (!RUNNING) updateStepper(3);
   } catch (e) { /* no summary yet */ }
 }
 
@@ -285,22 +308,22 @@ function renderResults(sum) {
   $("#results-meta").textContent = `${(sum.audio_duration_s || 0).toFixed(1)}s audio · ${sum.configs.length} configs · last ${formatTs(sum.last_run)}`;
   $("#results-summary").innerHTML = `
     <div class="summary-tile">
-      <div class="tile-label">Best WER</div>
+      <div class="tile-label">Best WER<button type="button" class="tip" aria-label="What is WER?" data-tip="Word Error Rate vs the reference transcript. Lower is better. The reference is a YouTube auto-transcript, not gold &mdash; compare configs against each other, not to an absolute target.">?</button></div>
       <div class="tile-value">${sum.best_wer_config || "–"}</div>
       <div class="tile-sub">${(minOf(sum.configs, "wer") ?? 0).toFixed(3)}</div>
     </div>
     <div class="summary-tile">
-      <div class="tile-label">Best CER</div>
+      <div class="tile-label">Best CER<button type="button" class="tip" aria-label="What is CER?" data-tip="Character Error Rate. Like WER, but on individual characters &mdash; more robust to Indonesian word-segmentation differences.">?</button></div>
       <div class="tile-value">${sum.best_cer_config || "–"}</div>
       <div class="tile-sub">${(minOf(sum.configs, "cer") ?? 0).toFixed(3)}</div>
     </div>
     <div class="summary-tile">
-      <div class="tile-label">Fastest RTF</div>
+      <div class="tile-label">Fastest RTF<button type="button" class="tip" aria-label="What is RTF?" data-tip="Real-Time Factor = runtime &divide; audio length. Below 1.0 means faster than real-time. Above 1.0 is slower than real-time and may need a smaller model or a faster device.">?</button></div>
       <div class="tile-value">${sum.fastest_rtf_config || "–"}</div>
       <div class="tile-sub">${(minOf(sum.configs, "rtf") ?? 0).toFixed(3)}</div>
     </div>
     <div class="summary-tile">
-      <div class="tile-label">Total runtime</div>
+      <div class="tile-label">Total runtime<button type="button" class="tip" aria-label="What is total runtime?" data-tip="Sum of wall-clock seconds across all configs in this run (not the audio length).">?</button></div>
       <div class="tile-value">${(sum.total_runtime_s || 0).toFixed(1)}s</div>
       <div class="tile-sub">${sum.configs.length} configs</div>
     </div>
@@ -309,18 +332,23 @@ function renderResults(sum) {
   const tbody = $("#results-table tbody");
   tbody.innerHTML = "";
   const bestWer = minOf(sum.configs, "wer");
+  const worstWer = maxOf(sum.configs, "wer");
   const bestCer = minOf(sum.configs, "cer");
+  const worstCer = maxOf(sum.configs, "cer");
   sum.configs.forEach(c => {
     const tr = document.createElement("tr");
     tr.dataset.config = c.config;
     const isBest = (c.wer === bestWer);
     if (isBest) tr.classList.add("is-best");
+    const werCls = colorClsRelative(c.wer, bestWer, worstWer);
+    const cerCls = colorClsRelative(c.cer, bestCer, worstCer);
+    const rtfCls = isRtfRealTime(c.rtf) ? "is-good" : (c.rtf == null ? "" : "is-bad");
     tr.innerHTML = `
       <td>${escapeHtml(c.config)}</td>
       <td><span class="config-vad-toggle ${c.vad_enabled ? "is-on" : ""}"><span class="toggle-dot"></span>${c.vad_enabled ? "on" : "off"}</span></td>
-      <td class="num metric-cell metric-wer">${(c.wer ?? 0).toFixed(3)}</td>
-      <td class="num metric-cell metric-cer">${(c.cer ?? 0).toFixed(3)}</td>
-      <td class="num metric-cell metric-rtf">${(c.rtf ?? 0).toFixed(3)}</td>
+      <td class="num metric-cell metric-wer ${werCls}">${(c.wer ?? 0).toFixed(3)}</td>
+      <td class="num metric-cell metric-cer ${cerCls}">${(c.cer ?? 0).toFixed(3)}</td>
+      <td class="num metric-cell metric-rtf ${rtfCls}">${(c.rtf ?? 0).toFixed(3)}</td>
       <td class="num">${(c.runtime_s ?? 0).toFixed(1)}s</td>
       <td class="num">${c.silence_removed != null ? (c.silence_removed * 100).toFixed(1) + "%" : "–"}</td>
       <td class="num">${c.n_segments ?? "–"}</td>
@@ -412,6 +440,15 @@ async function refreshHistory() {
 function escapeHtml(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c])); }
 function escapeAttr(s) { return escapeHtml(s); }
 function minOf(arr, key) { return arr.reduce((m, x) => x[key] < m ? x[key] : m, Infinity); }
+function maxOf(arr, key) { return arr.reduce((m, x) => x[key] > m ? x[key] : m, -Infinity); }
+function isRtfRealTime(rtf) { return typeof rtf === "number" && rtf < 1.0; }
+function colorClsRelative(value, best, worst) {
+  if (value == null || best == null || worst == null) return "";
+  if (best === worst) return "";                    // ties → no coloring
+  if (value === best)  return "is-good";
+  if (value === worst) return "is-bad";
+  return "";
+}
 function formatTs(iso) {
   if (!iso) return "–";
   try { return new Date(iso).toLocaleString(); } catch { return iso; }

@@ -48,6 +48,28 @@
 
 <main class="container">
 
+  <!-- ─── Flow stepper (3 steps) ─────────────────────── -->
+  <ol class="flow-stepper" id="flow-stepper" aria-label="Benchmark flow">
+    <li class="flow-step is-active" data-stage="1">
+      <button type="button" data-step-target="run-panel" class="flow-step-btn">
+        <span class="flow-step-num">1</span>
+        <span class="flow-step-label">Configure</span>
+      </button>
+    </li>
+    <li class="flow-step" data-stage="2">
+      <button type="button" data-step-target="run-status" class="flow-step-btn">
+        <span class="flow-step-num">2</span>
+        <span class="flow-step-label">Run</span>
+      </button>
+    </li>
+    <li class="flow-step" data-stage="3">
+      <button type="button" data-step-target="results-panel" class="flow-step-btn">
+        <span class="flow-step-num">3</span>
+        <span class="flow-step-label">Compare results</span>
+      </button>
+    </li>
+  </ol>
+
   <!-- ─── System Resources ────────────────────────────────── -->
   <section class="panel sysmon-panel">
     <header class="panel-head">
@@ -131,12 +153,12 @@
         <tr>
           <th>Config</th>
           <th>VAD</th>
-          <th class="num">WER ↓</th>
-          <th class="num">CER ↓</th>
-          <th class="num">RTF</th>
-          <th class="num">Runtime</th>
-          <th class="num">Silence removed</th>
-          <th class="num">Segments</th>
+          <th class="num">WER <span class="th-arrow">↓</span><button type="button" class="tip" aria-label="What is WER?" data-tip="Word Error Rate vs the reference transcript. Lower is better. The reference is a YouTube auto-transcript, not gold &mdash; compare configs against each other, not to an absolute target.">?</button></th>
+          <th class="num">CER <span class="th-arrow">↓</span><button type="button" class="tip" aria-label="What is CER?" data-tip="Character Error Rate. Like WER, but on individual characters &mdash; more robust to Indonesian word-segmentation differences.">?</button></th>
+          <th class="num">RTF<button type="button" class="tip" aria-label="What is RTF?" data-tip="Real-Time Factor = runtime &divide; audio length. Below 1.0 means faster than real-time. Above 1.0 is slower than real-time and may need a smaller model or a faster device.">?</button></th>
+          <th class="num">Runtime<button type="button" class="tip" aria-label="What is runtime?" data-tip="Wall-clock seconds for the full whisper-cli invocation, including VAD pre-processing when enabled.">?</button></th>
+          <th class="num">Silence removed<button type="button" class="tip" aria-label="What is silence removed?" data-tip="Share of audio that VAD dropped as silence. Higher means more aggressive trimming &mdash; but too aggressive can also drop real speech. Compare WER alongside this number, not in isolation.">?</button></th>
+          <th class="num">Segments<button type="button" class="tip" aria-label="What are segments?" data-tip="Number of speech regions VAD found in the audio. Not 'good' or 'bad' on its own &mdash; depends on the speaker's style.">?</button></th>
           <th>Model</th>
         </tr>
       </thead>

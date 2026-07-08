@@ -91,6 +91,45 @@ body {
   padding: 24px 28px 64px;
   display: flex; flex-direction: column; gap: 18px;
 }
+
+/* ─── Flow stepper ────────────────────────────────────── */
+.flow-stepper {
+  list-style: none; display: flex; align-items: stretch; gap: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 8px;
+  box-shadow: var(--shadow-sm);
+}
+.flow-step { flex: 1; position: relative; }
+.flow-step + .flow-step::before {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 1px; height: 24px; background: var(--border-light);
+  transform: translateY(-50%);
+}
+.flow-step-btn {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; padding: 10px 14px;
+  background: transparent; border: none; border-radius: var(--radius-sm);
+  cursor: pointer; text-align: left; color: var(--text-muted);
+  font-family: var(--sans); font-size: 13px; font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+}
+.flow-step-btn:hover { background: var(--bg-warm); color: var(--text); }
+.flow-step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--bg-warm); color: var(--text-muted);
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  flex-shrink: 0; transition: background 0.15s, color 0.15s;
+}
+.flow-step-label { letter-spacing: -0.005em; }
+.flow-step.is-active .flow-step-btn { color: var(--text); }
+.flow-step.is-active .flow-step-num {
+  background: var(--accent); color: white;
+}
+.flow-step.is-done .flow-step-btn { color: var(--text-secondary); }
+.flow-step.is-done .flow-step-num {
+  background: var(--good-bg); color: var(--good);
+}
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -241,6 +280,42 @@ body {
 .metric-wer { color: var(--wer-color); }
 .metric-cer { color: var(--cer-color); }
 .metric-rtf { color: var(--rtf-color); }
+.metric-cell.is-good { background: var(--good-bg); }
+.metric-cell.is-bad  { background: var(--bad-bg);  }
+
+/* ─── Metric tooltip (?) buttons ───────────────────────── */
+.tip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 6px;
+  border-radius: 50%; border: 1px solid var(--border);
+  background: var(--surface-alt); color: var(--text-muted);
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  cursor: help; padding: 0; line-height: 1;
+  position: relative; vertical-align: middle;
+}
+.tip:hover, .tip:focus { background: var(--bg-warm); color: var(--text-secondary); outline: none; }
+.tip[data-tip]:hover::after,
+.tip[data-tip]:focus::after {
+  content: attr(data-tip);
+  position: absolute; top: calc(100% + 6px); left: 50%;
+  transform: translateX(-50%);
+  min-width: 220px; max-width: 320px;
+  background: var(--text); color: var(--surface);
+  font-family: var(--sans); font-size: 12px; font-weight: 400; line-height: 1.5;
+  padding: 8px 10px; border-radius: var(--radius-xs);
+  box-shadow: var(--shadow);
+  z-index: 50; text-align: left;
+  white-space: normal; word-wrap: break-word;
+  pointer-events: none;
+}
+.tip[data-tip]:hover::before,
+.tip[data-tip]:focus::before {
+  content: ""; position: absolute; top: 100%; left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent; border-bottom-color: var(--text);
+  z-index: 50; pointer-events: none;
+}
+.th-arrow { color: var(--text-muted); font-weight: 500; margin-right: 2px; }
 
 .best-line { padding: 12px 22px; font-family: var(--mono); font-size: 12px; }
 
