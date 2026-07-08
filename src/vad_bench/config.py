@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # assumed dead (one full file transcribe + scoring; well under 5 min).
     run_stale_after_s: int = 600
 
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    # HTTP Basic Auth password gating the whole dashboard (any username
+    # works). Mirrors the sibling ocr-benchmark project exactly. Override
+    # via AUTH_PASSWORD in .env. The browser handles the login prompt —
+    # there's no /login page or session token.
+    auth_password: str = "AI4DB-BENCH"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

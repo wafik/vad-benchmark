@@ -20,14 +20,18 @@ UI patterns are portable:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import secrets
 import sys
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
 from .config import Settings, get_settings
 from .paths import (
@@ -40,6 +44,37 @@ from .paths import (
 from .runner import RUN_STATUS_PATH, run as run_benchmark, read_status
 
 log = logging.getLogger(__name__)
+
+
+# ─── HTTP Basic Auth ──────────────────────────────────────────────
+# Mirrors the sibling ocr-benchmark project exactly: single shared
+# password in `Settings.auth_password` (env var AUTH_PASSWORD), browser
+# handles the login prompt (no /login page, no session token). Constant-
+# time compare via secrets.compare_digest. /api/health is allowlisted so
+# Docker HEALTHCHECK / external monitors can probe without credentials.
+def _check_auth(request: Request) -> bool:
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Basic "):
+        return False
+    try:
+        _, password = base64.b64decode(header[6:]).decode("utf-8").split(":", 1)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return secrets.compare_digest(password, get_settings().auth_password)
+
+
+class _BasicAuthMiddleware(BaseHTTPMiddleware):
+    """Static password gate. Browser handles the login prompt (no login
+    page/session needed) — any username, password from AUTH_PASSWORD."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Unauthenticated: only the healthcheck, so it doesn't need creds.
+        if request.url.path == "/api/health" or _check_auth(request):
+            return await call_next(request)
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="VAD Benchmark"'},
+        )
 
 
 def _is_stale(status: dict, stale_after_s: int) -> bool:
@@ -56,6 +91,16 @@ def _is_stale(status: dict, stale_after_s: int) -> bool:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="VAD Benchmark", version="0.1.0")
+
+    # Auth gate — must be added before any routes mount. Covers every
+    # endpoint except /api/health (allowlisted for Docker HEALTHCHECK).
+    app.add_middleware(_BasicAuthMiddleware)
+
+    @app.get("/api/health")
+    def api_health():
+        # Allowlisted in _BasicAuthMiddleware so monitors can probe
+        # without prompting for credentials.
+        return {"ok": True, "status": "running", "service": "vad-benchmark"}
 
     @app.post("/api/run")
     def api_run(
