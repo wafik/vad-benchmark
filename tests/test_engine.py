@@ -15,7 +15,9 @@ def test_cmd_with_vad(tmp_path):
     assert isinstance(cmd, list)
     assert "--vad" in cmd
     assert "--vad-model" in cmd
-    assert "--no-timestamps" in cmd
+    # --no-timestamps intentionally omitted so the VAD breakdown tab can
+    # render per-region timelines from the bracketed timestamps.
+    assert "--no-timestamps" not in cmd
 
 
 def test_cmd_without_vad(tmp_path):
@@ -93,3 +95,29 @@ def test_parse_progress_missing_line_returns_none():
     silence_removed, speech_seconds = _parse_progress("", audio_duration_s=10.0)
     assert silence_removed is None
     assert speech_seconds is None
+
+
+def test_parse_segments_extracts_bracketed_lines():
+    from vad_bench.engine import _parse_segments
+    stdout = (
+        "[00:00:00.000 --> 00:00:08.500]  Halo semua, hari ini kita bicara.\n"
+        "[00:00:08.500 --> 00:00:14.000]  Topik kita adalah AI.\n"
+        "non-timestamped line that should be ignored\n"
+        "[00:00:14.000 --> 00:00:20.250]  Silakan disimak.\n"
+    )
+    segs = _parse_segments(stdout)
+    assert len(segs) == 3, segs
+    assert segs[0][0] == 0.0 and segs[0][1] == 8.5
+    assert segs[1][0] == 8.5 and segs[1][1] == 14.0
+    assert "Halo semua" in segs[0][2]
+    assert "Silakan disimak" in segs[2][2]
+
+
+def test_parse_segments_empty_input():
+    from vad_bench.engine import _parse_segments
+    assert _parse_segments("") == []
+    assert _parse_segments(None) == []  # type: ignore[arg-type] — None is allowed by the parser
+
+
+if __name__ == "__main__":  # self-check
+    pass

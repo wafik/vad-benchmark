@@ -194,6 +194,32 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "audio not prepared — run a benchmark first")
         return FileResponse(PODCAST_WAV, media_type="audio/wav")
 
+    @app.get("/api/reference/segments")
+    def api_reference_segments():
+        """Return the reference transcript as ``[{start, end, text}, ...]``.
+
+        Used by the VAD breakdown tab to draw the ground-truth timeline
+        underneath the Whisper-region timeline. The on-disk schema uses
+        ``start_s`` / ``end_s`` (from ``reference.write_reference_artifacts``)
+        — we normalize to ``start`` / ``end`` here for the UI.
+        """
+        path = REPORTS_ROOT / "reference" / "segments.json"
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                segs = data.get("segments") if isinstance(data, dict) else data
+                return {"segments": [
+                    {"start": s.get("start_s", s.get("start")),
+                     "end":   s.get("end_s",   s.get("end")),
+                     "text":  s.get("text", "")}
+                    for s in (segs or [])
+                ]}
+            except (json.JSONDecodeError, OSError):
+                pass
+        from .reference import load_reference
+        _text, segments = load_reference()
+        return {"segments": [{"start": s[0], "end": s[1], "text": s[2]} for s in segments]}
+
     @app.get("/api/config")
     def api_config():
         s = get_settings()

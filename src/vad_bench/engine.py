@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Settings
@@ -40,8 +40,13 @@ _NO_SPEECH_MARKER = "failed to process audio"
 #   whisper_print_progress_callback: progress =  11%
 # and one VAD summary line:
 #   whisper_vad: Reduced audio from 9778387 to 8352640 samples (14.6% reduction)
+# and (when --no-timestamps is OFF) one segment line per region:
+#   [00:00:00.000 --> 00:00:08.500]  Halo semua, hari ini kita...
 _VAD_REDUCTION_RE = re.compile(
     r"Reduced audio from (\d+) to (\d+) samples \(([\d.]+)% reduction\)"
+)
+_SEGMENT_RE = re.compile(
+    r"\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)"
 )
 
 
@@ -58,6 +63,9 @@ class EngineResult:
     cmd: list[str] | str
     raw_stdout: str
     raw_stderr: str
+    # Per-segment (start_s, end_s, text) from the timestamped whisper-cli
+    # output. Empty when --no-timestamps was on or parsing failed.
+    segments: list[tuple[float, float, str]] = field(default_factory=list)
 
 
 def _hms_to_s(hms: str) -> float:
@@ -71,6 +79,36 @@ def _hms_to_s(hms: str) -> float:
 def _parse_segments_legacy(_stderr: str, _stdout: str) -> str:
     """Deprecated. Returns the bare stdout transcript."""
     return (_stdout or "").strip()
+
+
+def _parse_segments(stdout: str) -> list[tuple[float, float, str]]:
+    """Parse per-region segments from a timestamped whisper-cli output.
+
+    The CLI prints one line per detected region::
+
+        [00:00:00.000 --> 00:00:08.500]  Halo semua, hari ini kita...
+
+    Returns ``[(start_s, end_s, text), ...]``. Lines that don't match the
+    bracket format are silently skipped (whisper-cli can also print
+    non-timestamped text in some configurations). Empty list on failure.
+    """
+    if not stdout:
+        return []
+    out: list[tuple[float, float, str]] = []
+    for line in stdout.splitlines():
+        m = _SEGMENT_RE.search(line)
+        if not m:
+            continue
+        try:
+            start = _hms_to_s(m.group(1))
+            end = _hms_to_s(m.group(2))
+        except ValueError:
+            continue
+        if end < start:
+            continue
+        text = m.group(3).strip()
+        out.append((start, end, text))
+    return out
 
 
 def _parse_progress(stderr: str, audio_duration_s: float) -> tuple[float | None, float | None]:
@@ -155,7 +193,9 @@ def _whisper_flags(model_path: Path, vad_model_path: Path | None,
         "-f", _pp(wav_path),
         "-l", s.language,
         "-t", str(s.threads),
-        "--no-timestamps", # we transcribe whole-file; don't prefix times
+        # Note: --no-timestamps intentionally omitted so the VAD breakdown
+        # tab can render per-region timelines. The transcript still goes to
+        # stdout, prefixed with [HH:MM:SS.mmm --> HH:MM:SS.mmm] markers.
         # Always request progress to stderr — we extract the VAD-reduction
         # summary line from there. The transcript still lands on stdout.
         "--print-progress",
@@ -271,6 +311,7 @@ def transcribe(
             runtime_s=runtime_s,
             silence_removed=None,
             speech_seconds=None,
+            segments=[],
             cmd=cmd,
             raw_stdout=stdout,
             raw_stderr=stderr,
@@ -284,7 +325,13 @@ def transcribe(
         )
 
     silence_removed, speech_seconds = _parse_progress(stderr, audio_duration_s or 0.0)
-    transcript = (stdout or "").strip()
+    segments = _parse_segments(stdout)
+    # The transcript is the joined text of the segments when we have them —
+    # avoids double-counting timestamps in the user-facing transcript.
+    if segments:
+        transcript = " ".join(t for _, _, t in segments if t).strip()
+    else:
+        transcript = (stdout or "").strip()
 
     return EngineResult(
         config=config,
@@ -293,6 +340,7 @@ def transcribe(
         runtime_s=runtime_s,
         silence_removed=silence_removed,
         speech_seconds=speech_seconds,
+        segments=segments,
         cmd=cmd,
         raw_stdout=stdout,
         raw_stderr=stderr,

@@ -92,6 +92,61 @@ def word_alignment(ref: str, hyp: str) -> list[dict]:
     return out
 
 
+def per_region_wer(
+    ref_segments: list[tuple[float, float, str]],
+    hyp_segments: list[tuple[float, float, str]],
+    *,
+    iou_threshold: float = 0.1,
+) -> list[dict]:
+    """Compute per-reference-region WER/CER by greedy timestamp overlap.
+
+    For each reference segment, finds the hyp segment with the largest
+    intersection-over-union (IoU) overlap. If the best IoU is below
+    ``iou_threshold``, the reference region is treated as having no
+    matching hyp (i.e. WER=1.0 for missing region).
+
+    Returns one entry per reference segment::
+
+        [{index, start, end, duration, ref_text, hyp_text, hyp_start,
+          hyp_end, wer, cer, overlap}, ...]
+    """
+    out: list[dict] = []
+    for i, (rs, re_, rt) in enumerate(ref_segments):
+        ref_dur = max(0.0, re_ - rs)
+        best_iou = 0.0
+        best_match: tuple[float, float, str] | None = None
+        for hs, he_, ht in hyp_segments:
+            inter = max(0.0, min(re_, he_) - max(rs, hs))
+            union = ref_dur + max(0.0, he_ - hs) - inter
+            iou = (inter / union) if union > 0 else 0.0
+            if iou > best_iou:
+                best_iou = iou
+                best_match = (hs, he_, ht)
+        if best_match is not None and best_iou >= iou_threshold:
+            hs, he_, ht = best_match
+            w = wer(rt, ht)
+            c = cer(rt, ht)
+        else:
+            hs = he_ = 0.0
+            ht = ""
+            w = 1.0 if rt.strip() else 0.0
+            c = 1.0 if rt.strip() else 0.0
+        out.append({
+            "index": i,
+            "start": rs,
+            "end": re_,
+            "duration": ref_dur,
+            "ref_text": rt,
+            "hyp_text": ht,
+            "hyp_start": hs,
+            "hyp_end": he_,
+            "wer": w,
+            "cer": c,
+            "overlap": best_iou,
+        })
+    return out
+
+
 @dataclass
 class RunMetrics:
     config: str
@@ -108,6 +163,9 @@ class RunMetrics:
     speech_seconds: float | None = None
     silence_removed: float | None = None
     n_segments: int | None = None
+    # Per-segment (start, end, text) parsed from whisper-cli output.
+    # Empty when --no-timestamps was on or parsing failed.
+    segments: list[tuple[float, float, str]] = field(default_factory=list)
     # Optional aligned diff for the UI.
     alignment: list[dict] = field(default_factory=list)
 
@@ -125,6 +183,10 @@ class RunMetrics:
             "speech_seconds": self.speech_seconds,
             "silence_removed": self.silence_removed,
             "n_segments": self.n_segments,
+            "segments": [
+                {"start": s, "end": e, "text": t}
+                for s, e, t in self.segments
+            ],
             "alignment": self.alignment,
         }
 
@@ -149,4 +211,26 @@ if __name__ == "__main__":  # self-check
     diff = word_alignment("satu dua tiga", "satu tiga")
     kinds = sorted({d["kind"] for d in diff})
     assert "delete" in kinds, f"expected 'delete' in {diff}"
+
+    # per_region_wer
+    ref_segs = [(0.0, 5.0, "halo semua"), (5.0, 10.0, "hari ini kita ngobrol")]
+    hyp_segs_perfect = [(0.0, 5.0, "halo semua"), (5.0, 10.0, "hari ini kita ngobrol")]
+    out = per_region_wer(ref_segs, hyp_segs_perfect)
+    assert len(out) == 2
+    assert out[0]["wer"] == 0.0 and out[1]["wer"] == 0.0, out
+    assert out[0]["hyp_text"] == "halo semua"
+
+    # substitution in one region
+    hyp_segs_partial = [(0.0, 5.0, "halo semua"), (5.0, 10.0, "hari ini kita bisnis")]
+    out = per_region_wer(ref_segs, hyp_segs_partial)
+    assert out[0]["wer"] == 0.0
+    assert out[1]["wer"] > 0.0, out[1]
+
+    # ref region with no overlapping hyp -> empty match
+    hyp_segs_short = [(0.0, 5.0, "halo semua")]
+    out = per_region_wer(ref_segs, hyp_segs_short)
+    assert out[0]["wer"] == 0.0
+    assert out[1]["wer"] == 1.0   # all ref words missing
+    assert out[1]["hyp_text"] == ""
+
     print("metrics self-check: OK")

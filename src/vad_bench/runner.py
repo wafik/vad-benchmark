@@ -284,7 +284,8 @@ def _score(result: EngineResult, reference_norm: str, audio_duration_s: float) -
         audio_duration_s=audio_duration_s,
         speech_seconds=result.speech_seconds,
         silence_removed=result.silence_removed if result.vad_enabled else None,
-        n_segments=None,
+        n_segments=len(result.segments) if result.segments else None,
+        segments=result.segments,
         alignment=word_alignment(reference_norm, hyp_norm),
     )
 

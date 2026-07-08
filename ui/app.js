@@ -75,6 +75,29 @@ const I18N = {
     "history.colBestCer":   "Best CER",
     "history.colRuntime":   "Total runtime",
     "history.colAudio":     "Audio",
+    "tab.comparison":       "Comparison",
+    "tab.vadBreakdown":     "VAD breakdown",
+    "vad.title":            "VAD breakdown — {config}",
+    "vad.noSegments":       "(no per-region data for this run — whisper-cli was run without timestamps, or parsing failed)",
+    "vad.metrics.regions":  "Regions",
+    "vad.metrics.meanDur":  "Mean region duration",
+    "vad.metrics.totalSpeech": "Total speech",
+    "vad.metrics.silenceRemoved": "Silence removed",
+    "vad.timeline.vad":     "Whisper regions (VAD output)",
+    "vad.timeline.gt":      "Reference regions (ground truth)",
+    "vad.timeline.axis":    "Time (mm:ss)",
+    "vad.regions.idx":      "#",
+    "vad.regions.range":    "Range",
+    "vad.regions.duration": "Dur.",
+    "vad.regions.gtText":   "Reference text",
+    "vad.regions.hypText":  "Whisper text",
+    "vad.regions.wer":      "WER",
+    "vad.regions.cer":      "CER",
+    "vad.regions.match":    "Match",
+    "vad.match.good":       "good overlap",
+    "vad.match.partial":    "partial",
+    "vad.match.none":       "no overlap",
+    "vad.emptyTimeline":    "(audio timeline)",
     "sysmon.title":         "System resources",
     "sysmon.cores":         " cores",
     "sysmon.ramFmt":        "{used} / {total} MB",
@@ -170,6 +193,29 @@ const I18N = {
     "history.colBestCer":   "CER terbaik",
     "history.colRuntime":   "Total runtime",
     "history.colAudio":     "Audio",
+    "tab.comparison":       "Perbandingan",
+    "tab.vadBreakdown":     "Rincian VAD",
+    "vad.title":            "Rincian VAD — {config}",
+    "vad.noSegments":       "(tidak ada data per-region untuk run ini — whisper-cli dijalankan tanpa timestamp, atau parsing gagal)",
+    "vad.metrics.regions":  "Wilayah",
+    "vad.metrics.meanDur":  "Rerata durasi wilayah",
+    "vad.metrics.totalSpeech": "Total bicara",
+    "vad.metrics.silenceRemoved": "Silence dihapus",
+    "vad.timeline.vad":     "Wilayah Whisper (keluaran VAD)",
+    "vad.timeline.gt":      "Wilayah referensi (ground truth)",
+    "vad.timeline.axis":    "Waktu (mm:ss)",
+    "vad.regions.idx":      "#",
+    "vad.regions.range":    "Rentang",
+    "vad.regions.duration": "Dur.",
+    "vad.regions.gtText":   "Teks referensi",
+    "vad.regions.hypText":  "Teks Whisper",
+    "vad.regions.wer":      "WER",
+    "vad.regions.cer":      "CER",
+    "vad.regions.match":    "Cocok",
+    "vad.match.good":       "tumpang tindih baik",
+    "vad.match.partial":    "sebagian",
+    "vad.match.none":       "tidak ada tumpang tindih",
+    "vad.emptyTimeline":    "(timeline audio)",
     "sysmon.title":         "Resource sistem",
     "sysmon.cores":         " core",
     "sysmon.ramFmt":        "{used} / {total} MB",
@@ -256,7 +302,7 @@ function refreshBadges() {
 async function init() {
   try { LANG = localStorage.getItem("vad-bench.lang") || "id"; } catch {}
   applyLanguage();                     // first pass on static DOM
-  await Promise.all([loadConfig(), loadModels(), refreshSystem()]);
+  await Promise.all([loadConfig(), loadModels(), refreshSystem(), loadRefSegments()]);
   pollSystem();
   openSSE();
   renderConfigs(DEFAULT_CONFIGS());
@@ -264,6 +310,14 @@ async function init() {
   await refreshHistory();
   wireFlowStepper();
   wireLangToggle();
+  wireResultsTabs();
+}
+
+async function loadRefSegments() {
+  try {
+    const data = await fetch("/api/reference/segments").then(r => r.json());
+    REF_SEGMENTS = (data && data.segments) || [];
+  } catch { REF_SEGMENTS = []; }
 }
 
 // ─── Language toggle (topbar) ───────────────────────────────
@@ -271,6 +325,18 @@ function wireLangToggle() {
   $$(".lang-toggle [data-lang]").forEach(btn => {
     btn.classList.toggle("is-active", btn.dataset.lang === LANG);
     btn.addEventListener("click", () => setLanguage(btn.dataset.lang));
+  });
+}
+
+// ─── Results tabs (Comparison / VAD breakdown) ──────────────
+function wireResultsTabs() {
+  $$(".results-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      const target = tab.dataset.tab;
+      $$(".results-tab").forEach(t => t.classList.toggle("is-active", t === tab));
+      $("#results-pane-compare").hidden = (target !== "compare");
+      $("#results-pane-vad").hidden = (target !== "vad");
+    });
   });
 }
 
@@ -636,6 +702,7 @@ function renderResults(sum) {
 }
 
 let SELECTED = null;
+let REF_SEGMENTS = [];   // [{start, end, text}, ...] from references/segments.json
 async function selectConfig(config) {
   SELECTED = config;
   $$("#results-table tbody tr").forEach(tr => {
@@ -644,6 +711,7 @@ async function selectConfig(config) {
   try {
     const detail = await fetch(`/api/results/${encodeURIComponent(config)}`).then(r => r.json());
     renderDetail(detail);
+    renderVadBreakdown(detail, REF_SEGMENTS);
   } catch (e) { /* ignore */ }
 }
 
@@ -676,6 +744,174 @@ function renderAlignment(parts) {
     if (p.kind === "delete")    return `<span class="diff-del">${escapeHtml(p.ref || "")}</span>`;
     return "";
   }).join(" ");
+}
+
+// ─── VAD breakdown tab ───────────────────────────────────────
+function fmtMmSs(secs) {
+  if (secs == null || !Number.isFinite(secs)) return "–";
+  const s = Math.max(0, Math.floor(secs));
+  const mm = Math.floor(s / 60);
+  const ss = s % 60;
+  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+
+function matchCls(overlap) {
+  if (overlap >= 0.5) return "match-good";
+  if (overlap >= 0.1) return "match-partial";
+  return "match-none";
+}
+
+function computePerRegion(refSegs, hypSegs, iouThreshold = 0.1) {
+  const out = [];
+  refSegs.forEach((ref, i) => {
+    const refDur = Math.max(0, ref.end - ref.start);
+    let bestIou = 0;
+    let bestHyp = null;
+    for (const hyp of hypSegs) {
+      const inter = Math.max(0, Math.min(ref.end, hyp.end) - Math.max(ref.start, hyp.start));
+      const union = refDur + Math.max(0, hyp.end - hyp.start) - inter;
+      const iou = union > 0 ? inter / union : 0;
+      if (iou > bestIou) { bestIou = iou; bestHyp = hyp; }
+    }
+    const matched = bestHyp != null && bestIou >= iouThreshold;
+    const hypText = matched ? bestHyp.text : "";
+    const hypStart = matched ? bestHyp.start : 0;
+    const hypEnd = matched ? bestHyp.end : 0;
+    // Inline WER/CER via jiwer… we don't have jiwer in the browser.
+    // Use a simple word-level overlap ratio as a proxy indicator:
+    //   score = 1 - (unique_mismatches / total_ref_words)
+    // Not a real WER but conveys "this region matched well / poorly".
+    const refWords = (ref.text || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const hypWords = (hypText || "").toLowerCase().split(/\s+/).filter(Boolean);
+    let score;
+    if (refWords.length === 0) {
+      score = hypWords.length === 0 ? 1.0 : 0.0;
+    } else if (!matched) {
+      score = 0.0;
+    } else {
+      const refSet = new Set(refWords);
+      const hit = hypWords.filter(w => refSet.has(w)).length;
+      score = hit / refWords.length;
+    }
+    out.push({
+      index: i,
+      start: ref.start, end: ref.end, duration: refDur,
+      refText: ref.text || "",
+      hypText, hypStart, hypEnd,
+      matchScore: score,
+      overlap: bestIou,
+    });
+  });
+  return out;
+}
+
+function renderVadBreakdown(d, refSegments) {
+  const root = $("#vad-breakdown");
+  if (!d.segments || !d.segments.length) {
+    root.innerHTML = `<div class="vad-empty muted">${t("vad.noSegments")}</div>`;
+    return;
+  }
+  const audioDur = d.audio_duration_s || 0;
+  const hypSegs = d.segments.map(s => ({ start: s.start, end: s.end, text: s.text }));
+  const refSegs = (refSegments || []).map(s => ({ start: s.start, end: s.end, text: s.text }));
+  const perRegion = computePerRegion(refSegs, hypSegs);
+
+  // Summary metrics.
+  const totalHypSpeech = hypSegs.reduce((a, s) => a + Math.max(0, s.end - s.start), 0);
+  const meanDur = hypSegs.length ? totalHypSpeech / hypSegs.length : 0;
+  const silenceRemoved = audioDur > 0 ? Math.max(0, 1 - totalHypSpeech / audioDur) : null;
+  const matchedRegions = perRegion.filter(r => r.overlap >= 0.1).length;
+
+  root.innerHTML = `
+    <div class="vad-metrics">
+      <div class="summary-tile">
+        <div class="tile-label">${t("vad.metrics.regions")}</div>
+        <div class="tile-value">${hypSegs.length}</div>
+        <div class="tile-sub">${matchedRegions}/${refSegs.length || "–"} ${LANG === "id" ? "cocok" : "matched"}</div>
+      </div>
+      <div class="summary-tile">
+        <div class="tile-label">${t("vad.metrics.meanDur")}</div>
+        <div class="tile-value">${meanDur.toFixed(1)}s</div>
+        <div class="tile-sub">${t("vad.metrics.totalSpeech")}: ${totalHypSpeech.toFixed(0)}s</div>
+      </div>
+      <div class="summary-tile">
+        <div class="tile-label">${t("vad.metrics.silenceRemoved")}</div>
+        <div class="tile-value">${silenceRemoved != null ? (silenceRemoved * 100).toFixed(1) + "%" : "–"}</div>
+        <div class="tile-sub">${audioDur.toFixed(0)}s ${LANG === "id" ? "audio" : "audio"}</div>
+      </div>
+    </div>
+
+    <div class="vad-timelines">
+      <div class="vad-timeline-block">
+        <div class="vad-timeline-label">${t("vad.timeline.vad")}</div>
+        <div class="vad-timeline" data-kind="vad">
+          <div class="vad-timeline-axis">${renderTimelineAxis(audioDur)}</div>
+          <div class="vad-timeline-track">
+            ${hypSegs.map(s => renderTimelineRegion(s, audioDur, "vad-region")).join("")}
+            ${!hypSegs.length ? `<div class="vad-timeline-empty muted">${t("vad.emptyTimeline")}</div>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="vad-timeline-block">
+        <div class="vad-timeline-label">${t("vad.timeline.gt")}</div>
+        <div class="vad-timeline" data-kind="gt">
+          <div class="vad-timeline-axis">${renderTimelineAxis(audioDur)}</div>
+          <div class="vad-timeline-track">
+            ${refSegs.map(s => renderTimelineRegion(s, audioDur, "gt-region")).join("")}
+            ${!refSegs.length ? `<div class="vad-timeline-empty muted">${t("vad.noSegments")}</div>` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <table class="vad-regions-table">
+      <thead>
+        <tr>
+          <th>${t("vad.regions.idx")}</th>
+          <th>${t("vad.regions.range")}</th>
+          <th class="num">${t("vad.regions.duration")}</th>
+          <th>${t("vad.regions.gtText")}</th>
+          <th>${t("vad.regions.hypText")}</th>
+          <th class="num">${t("vad.regions.match")}</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${perRegion.map(r => `
+          <tr>
+            <td>${r.index + 1}</td>
+            <td><span class="muted">${fmtMmSs(r.start)}–${fmtMmSs(r.end)}</span></td>
+            <td class="num">${r.duration.toFixed(1)}s</td>
+            <td>${escapeHtml(truncate(r.refText, 80))}</td>
+            <td>${escapeHtml(truncate(r.hypText, 80))}</td>
+            <td class="num ${matchCls(r.overlap)}" title="overlap=${r.overlap.toFixed(2)}">${(r.matchScore * 100).toFixed(0)}%</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderTimelineAxis(audioDur) {
+  // Tick every 60s; up to ~12 ticks for an 11-min podcast.
+  const ticks = [];
+  for (let s = 0; s <= audioDur; s += 60) {
+    const left = audioDur > 0 ? (s / audioDur) * 100 : 0;
+    ticks.push(`<span class="vad-timeline-tick" style="left:${left}%">${fmtMmSs(s)}</span>`);
+  }
+  return ticks.join("");
+}
+
+function renderTimelineRegion(seg, audioDur, klass) {
+  if (audioDur <= 0) return "";
+  const left = Math.max(0, Math.min(100, (seg.start / audioDur) * 100));
+  const width = Math.max(0.5, Math.min(100 - left, ((seg.end - seg.start) / audioDur) * 100));
+  const dur = (seg.end - seg.start).toFixed(1);
+  return `<div class="vad-region ${klass}" style="left:${left}%;width:${width}%" title="${escapeHtml(fmtMmSs(seg.start) + '–' + fmtMmSs(seg.end) + ' (' + dur + 's)')}"></div>`;
+}
+
+function truncate(s, n) {
+  s = s || "";
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
 // ─── History ───────────────────────────────────────────────

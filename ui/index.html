@@ -104,14 +104,20 @@
       <span class="muted" id="results-meta">–</span>
     </header>
 
+    <div class="results-tabs">
+      <button type="button" class="results-tab is-active" data-tab="compare" data-i18n="tab.comparison">Comparison</button>
+      <button type="button" class="results-tab" data-tab="vad" data-i18n="tab.vadBreakdown">VAD breakdown</button>
+    </div>
+
     <div class="results-verdict" id="results-verdict" hidden>
       <span class="verdict-label" data-i18n="verdict.label">Verdict</span>
       <span class="verdict-text" id="verdict-text"></span>
     </div>
 
-    <div class="results-summary" id="results-summary"></div>
+    <div id="results-pane-compare">
+      <div class="results-summary" id="results-summary"></div>
 
-    <table class="results-table" id="results-table">
+      <table class="results-table" id="results-table">
       <thead>
         <tr>
           <th data-i18n="table.config">Config</th>
@@ -131,6 +137,11 @@
     <div class="best-line muted" id="best-line"></div>
 
     <div class="config-detail" id="config-detail"></div>
+    </div>
+
+    <div id="results-pane-vad" hidden>
+      <div id="vad-breakdown" class="vad-breakdown"></div>
+    </div>
   </section>
 
   <!-- ─── History ──────────────────────────────────────────── -->
