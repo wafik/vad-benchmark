@@ -26,6 +26,7 @@ from .metrics import RunMetrics, aggregate, cer, normalize, wer, word_alignment
 from .paths import HISTORY_ROOT, MODELS_ROOT, REPORTS_ROOT
 from .reference import load_reference, write_reference_artifacts
 from .sysmon import ResourceMonitor
+from .verdict import build_verdict
 
 log = logging.getLogger(__name__)
 
@@ -219,6 +220,7 @@ def run(
 
         resource_summary = monitor.summary()
         summary["resources"] = resource_summary
+        summary["verdict"] = build_verdict(run_records)
 
         # Write summary.json + .csv.
         (REPORTS_ROOT / "summary.json").write_text(
@@ -339,6 +341,7 @@ def _save_to_history(summary: dict, records: list[dict], started_at: str) -> Non
         "audio_duration_s": summary.get("audio_duration_s"),
         "total_runtime_s": summary.get("total_runtime_s"),
         "resources": summary.get("resources", {}),
+        "verdict": summary.get("verdict"),
         "overall": {
             "best_wer_config": summary.get("best_wer_config"),
             "best_cer_config": summary.get("best_cer_config"),
