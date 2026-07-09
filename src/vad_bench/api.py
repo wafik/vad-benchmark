@@ -11,6 +11,7 @@ UI patterns are portable:
   GET  /api/results/<config>    per-config detail incl. word alignment
   GET  /api/results             list all configs from latest run
   GET  /api/audio               serve the prepared 16 kHz WAV (in-page player)
+  GET  /api/chunks/<config>/<i> serve one VAD-region chunk WAV
   GET  /api/config              current runtime config
   GET  /api/models              whisper/silero models present in models/
   GET  /api/system              live CPU/RAM/GPU/temperature snapshot
@@ -33,8 +34,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+import shutil
+
 from .config import Settings, get_settings
+from .engine import parse_settings_overrides
 from .paths import (
+    CHUNKS_ROOT,
     HISTORY_ROOT,
     MODELS_ROOT,
     PODCAST_WAV,
@@ -75,6 +80,31 @@ class _BasicAuthMiddleware(BaseHTTPMiddleware):
             status_code=401,
             headers={"WWW-Authenticate": 'Basic realm="VAD Benchmark"'},
         )
+
+
+def _readiness_issues(cfgs: list[dict], base: Settings) -> list[str]:
+    """Check whisper/VAD model files + whisper-cli binary exist for every
+    requested config, before scheduling a run that would fail deep inside
+    ``engine.transcribe()``. Returns human-readable problem strings (empty
+    = ready)."""
+    issues: list[str] = []
+    for cfg in cfgs:
+        name = cfg.get("name") or "config"
+        s = parse_settings_overrides(cfg.get("overrides") or {}, base)
+
+        model_path = MODELS_ROOT / s.whisper_model
+        if not model_path.exists():
+            issues.append(f"{name}: whisper model not found at {model_path}")
+
+        if s.vad_enabled:
+            vad_path = MODELS_ROOT / s.vad_model_path
+            if not vad_path.exists():
+                issues.append(f"{name}: Silero VAD model not found at {vad_path}")
+
+        binary = s.whisper_cli_cmd.split(" ", 1)[0]
+        if shutil.which(binary) is None and not Path(binary).exists():
+            issues.append(f"{name}: whisper-cli not found: {binary!r}")
+    return issues
 
 
 def _is_stale(status: dict, stale_after_s: int) -> bool:
@@ -121,6 +151,14 @@ def create_app() -> FastAPI:
         else:
             cfgs = None  # runner's default
 
+        check_cfgs = cfgs if cfgs is not None else [
+            {"name": "baseline_novad", "overrides": {"vad_enabled": False}},
+            {"name": "silero_vad",     "overrides": {"vad_enabled": True}},
+        ]
+        issues = _readiness_issues(check_cfgs, get_settings())
+        if issues:
+            return {"ok": False, "not_ready": True, "issues": issues}
+
         if RUN_STATUS_PATH.exists():
             try:
                 current = json.loads(RUN_STATUS_PATH.read_text(encoding="utf-8"))
@@ -131,7 +169,7 @@ def create_app() -> FastAPI:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        background.add_task(run_benchmark, cfgs, True)
+        background.add_task(run_benchmark, cfgs, verbose=True)
         return {"ok": True, "started": True}
 
     @app.get("/api/progress")
@@ -187,6 +225,14 @@ def create_app() -> FastAPI:
         if not path.exists():
             raise HTTPException(404, f"config not found: {config}")
         return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+    @app.get("/api/chunks/{config}/{index}")
+    def api_chunk_audio(config: str, index: int):
+        from .runner import _slug
+        path = CHUNKS_ROOT / _slug(config) / f"{index:04d}.wav"
+        if not path.exists():
+            raise HTTPException(404, f"chunk not available: {config}/{index}")
+        return FileResponse(path, media_type="audio/wav")
 
     @app.get("/api/audio")
     def api_audio():

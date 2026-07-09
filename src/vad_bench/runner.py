@@ -19,11 +19,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .audio import ensure_wav, wav_duration
+from .audio import ensure_wav, slice_wav_segments, wav_duration
 from .config import Settings
 from .engine import EngineResult, parse_settings_overrides, transcribe
 from .metrics import RunMetrics, aggregate, cer, normalize, wer, word_alignment
-from .paths import HISTORY_ROOT, MODELS_ROOT, REPORTS_ROOT
+from .paths import CHUNKS_ROOT, HISTORY_ROOT, MODELS_ROOT, REPORTS_ROOT
 from .reference import load_reference, write_reference_artifacts
 from .sysmon import ResourceMonitor
 from .verdict import build_verdict
@@ -114,6 +114,11 @@ def run(
     per_config_dir = REPORTS_ROOT / "per_config"
     per_config_dir.mkdir(parents=True, exist_ok=True)
 
+    # Chunk audio is latest-run-only: wipe before any config runs.
+    import shutil
+    if CHUNKS_ROOT.exists():
+        shutil.rmtree(CHUNKS_ROOT)
+
     base = Settings()
 
     monitor = ResourceMonitor(interval_s=2.0)
@@ -178,6 +183,9 @@ def run(
             rm = _score(result, reference_text, audio_duration)
             run_metrics.append(rm)
             run_records.append(_record_from_metrics(rm, s))
+
+            if s.vad_enabled and result.segments:
+                slice_wav_segments(wav, result.segments, CHUNKS_ROOT / _slug(name))
 
             # Per-config JSON artifact (transcript, alignment, metrics).
             (per_config_dir / f"{_slug(name)}.json").write_text(
@@ -287,6 +295,7 @@ def _score(result: EngineResult, reference_norm: str, audio_duration_s: float) -
         n_segments=len(result.segments) if result.segments else None,
         segments=result.segments,
         alignment=word_alignment(reference_norm, hyp_norm),
+        chunks_available=bool(result.vad_enabled and result.segments),
     )
 
 
@@ -302,6 +311,10 @@ def _record_from_metrics(rm: RunMetrics, s: Settings) -> dict:
         "speech_seconds": rm.speech_seconds,
         "silence_removed": rm.silence_removed,
         "n_segments": rm.n_segments,
+        "segments": [
+            {"start": start, "end": end, "text": text}
+            for start, end, text in rm.segments
+        ],
         "vad_threshold": s.vad_threshold,
         "vad_min_speech_ms": s.vad_min_speech_ms,
         "vad_min_silence_ms": s.vad_min_silence_ms,

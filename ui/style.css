@@ -292,9 +292,12 @@ body {
 .results-table tr.is-best td:first-child::before {
   content: "★ "; color: var(--good); font-family: var(--mono); font-size: 11px;
 }
-.results-table tbody tr { cursor: pointer; }
-.results-table tbody tr:hover { background: var(--accent-light); }
-.results-table tbody tr.is-selected { background: var(--accent-light); }
+.results-table tbody tr,
+.history-table tbody tr { cursor: pointer; }
+.results-table tbody tr:hover,
+.history-table tbody tr:hover { background: var(--accent-light); }
+.results-table tbody tr.is-selected,
+.history-table tbody tr.is-selected { background: var(--accent-light); }
 .metric-cell { font-weight: 500; }
 .metric-wer { color: var(--wer-color); }
 .metric-cer { color: var(--cer-color); }
@@ -487,6 +490,24 @@ body {
 .vad-regions-table .match-good    { color: var(--good); font-weight: 600; }
 .vad-regions-table .match-partial { color: var(--warn); font-weight: 600; }
 .vad-regions-table .match-none    { color: var(--bad); font-weight: 600; }
+
+/* Chunk list (audio-per-segment) */
+.vad-chunks { margin-top: 18px; }
+.vad-chunks h3 {
+  font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;
+  text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono);
+}
+.vad-chunks-table audio { width: 220px; height: 32px; display: block; }
+.vad-chunks-unavailable { padding: 14px 0; font-family: var(--mono); font-size: 12px; }
+
+/* ─── History detail (expanded run) ──────────────────────── */
+.history-detail { padding: 4px 22px 18px; }
+.history-detail h3 {
+  font-size: 12px; color: var(--text-secondary); margin-bottom: 8px;
+  text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono);
+}
+.history-detail .history-table { border: 1px solid var(--border-light); }
+.history-detail-note { margin-top: 10px; font-size: 12px; font-family: var(--mono); }
 
 /* ─── Footer ─────────────────────────────────────────────── */
 .footer {

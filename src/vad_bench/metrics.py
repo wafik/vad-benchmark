@@ -168,6 +168,7 @@ class RunMetrics:
     segments: list[tuple[float, float, str]] = field(default_factory=list)
     # Optional aligned diff for the UI.
     alignment: list[dict] = field(default_factory=list)
+    chunks_available: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -188,6 +189,7 @@ class RunMetrics:
                 for s, e, t in self.segments
             ],
             "alignment": self.alignment,
+            "chunks_available": self.chunks_available,
         }
 
 

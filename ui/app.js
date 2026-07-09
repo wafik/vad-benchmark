@@ -25,6 +25,7 @@ const I18N = {
     "run.submitting":       "Submitting…",
     "run.failed":           "Failed: ",
     "run.alreadyRunning":   "Already running — wait for it to finish.",
+    "run.notReady":         "Not ready: ",
     "run.emptyAlert":       "Add at least one config.",
     "run.staleNote":        " · (looks stuck — already-running lock older than stale threshold)",
     "run.runningPrefix":    "Running · ",
@@ -75,6 +76,15 @@ const I18N = {
     "history.colBestCer":   "Best CER",
     "history.colRuntime":   "Total runtime",
     "history.colAudio":     "Audio",
+    "history.detail.title": "Run detail — {ts}",
+    "history.detail.colConfig": "Config",
+    "history.detail.colVad": "VAD",
+    "history.detail.colWer": "WER",
+    "history.detail.colCer": "CER",
+    "history.detail.colRtf": "RTF",
+    "history.detail.colRuntime": "Runtime",
+    "history.detail.colSegments": "Segments",
+    "history.detail.segmentsNote": "Segment audio isn't kept from past runs — only the most recent run's chunks are playable, under \"VAD breakdown\".",
     "tab.comparison":       "Comparison",
     "tab.vadBreakdown":     "VAD breakdown",
     "vad.title":            "VAD breakdown — {config}",
@@ -98,6 +108,13 @@ const I18N = {
     "vad.match.partial":    "partial",
     "vad.match.none":       "no overlap",
     "vad.emptyTimeline":    "(audio timeline)",
+    "vad.chunks.title":     "Audio chunks sent to Whisper",
+    "vad.chunks.idx":       "#",
+    "vad.chunks.range":     "Time",
+    "vad.chunks.duration":  "Dur.",
+    "vad.chunks.text":      "Whisper text",
+    "vad.chunks.audio":     "Audio",
+    "vad.chunks.unavailable": "Chunk audio is only available for VAD-on configs from the most recent run.",
     "sysmon.title":         "System resources",
     "sysmon.cores":         " cores",
     "sysmon.ramFmt":        "{used} / {total} MB",
@@ -143,6 +160,7 @@ const I18N = {
     "run.submitting":       "Mengirim…",
     "run.failed":           "Gagal: ",
     "run.alreadyRunning":   "Sudah berjalan — tunggu sampai selesai.",
+    "run.notReady":         "Belum siap: ",
     "run.emptyAlert":       "Tambahkan minimal satu config.",
     "run.staleNote":        " · (terlihat macet — lock berjalan terlalu lama)",
     "run.runningPrefix":    "Berjalan · ",
@@ -193,6 +211,15 @@ const I18N = {
     "history.colBestCer":   "CER terbaik",
     "history.colRuntime":   "Total runtime",
     "history.colAudio":     "Audio",
+    "history.detail.title": "Detail run — {ts}",
+    "history.detail.colConfig": "Config",
+    "history.detail.colVad": "VAD",
+    "history.detail.colWer": "WER",
+    "history.detail.colCer": "CER",
+    "history.detail.colRtf": "RTF",
+    "history.detail.colRuntime": "Runtime",
+    "history.detail.colSegments": "Segmen",
+    "history.detail.segmentsNote": "Audio potongan tidak disimpan dari run lampau — hanya potongan dari run terakhir yang bisa diputar, di tab \"Rincian VAD\".",
     "tab.comparison":       "Perbandingan",
     "tab.vadBreakdown":     "Rincian VAD",
     "vad.title":            "Rincian VAD — {config}",
@@ -216,6 +243,13 @@ const I18N = {
     "vad.match.partial":    "sebagian",
     "vad.match.none":       "tidak ada tumpang tindih",
     "vad.emptyTimeline":    "(timeline audio)",
+    "vad.chunks.title":     "Potongan audio yang dikirim ke Whisper",
+    "vad.chunks.idx":       "#",
+    "vad.chunks.range":     "Waktu",
+    "vad.chunks.duration":  "Durasi",
+    "vad.chunks.text":      "Teks Whisper",
+    "vad.chunks.audio":     "Audio",
+    "vad.chunks.unavailable": "Potongan audio hanya tersedia untuk config VAD-on pada run terakhir.",
     "sysmon.title":         "Resource sistem",
     "sysmon.cores":         " core",
     "sysmon.ramFmt":        "{used} / {total} MB",
@@ -583,6 +617,7 @@ $("#btn-add-config").addEventListener("click", () => {
 $("#btn-default-compare").addEventListener("click", () => renderConfigs(DEFAULT_CONFIGS()));
 
 $("#btn-run").addEventListener("click", async () => {
+  $("#audio-player").play().catch(() => {});
   const configs = collectConfigs();
   if (configs.length === 0) { alert(t("run.emptyAlert")); return; }
   if (RUNNING) { return; }
@@ -593,6 +628,9 @@ $("#btn-run").addEventListener("click", async () => {
     const data = await resp.json();
     if (!data.ok && data.already_running) {
       $("#run-status").textContent = t("run.alreadyRunning");
+    } else if (!data.ok && data.not_ready) {
+      $("#run-status").textContent = t("run.notReady") + (data.issues || []).join("; ");
+      $("#run-status").classList.add("is-error"); $("#run-status").classList.remove("is-running");
     } else {
       $("#run-status").textContent = t("run.started");
     }
@@ -888,6 +926,40 @@ function renderVadBreakdown(d, refSegments) {
         `).join("")}
       </tbody>
     </table>
+
+    ${renderChunkList(d)}
+  `;
+}
+
+function renderChunkList(d) {
+  if (!d.chunks_available) {
+    return `<div class="vad-chunks-unavailable muted">${t("vad.chunks.unavailable")}</div>`;
+  }
+  const rows = (d.segments || []).map((s, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td><span class="muted">${fmtMmSs(s.start)}–${fmtMmSs(s.end)}</span></td>
+      <td class="num">${(s.end - s.start).toFixed(1)}s</td>
+      <td>${escapeHtml(truncate(s.text, 100))}</td>
+      <td><audio controls preload="none" src="/api/chunks/${encodeURIComponent(d.config)}/${i}"></audio></td>
+    </tr>
+  `).join("");
+  return `
+    <div class="vad-chunks">
+      <h3>${t("vad.chunks.title")}</h3>
+      <table class="vad-regions-table vad-chunks-table">
+        <thead>
+          <tr>
+            <th>${t("vad.chunks.idx")}</th>
+            <th>${t("vad.chunks.range")}</th>
+            <th class="num">${t("vad.chunks.duration")}</th>
+            <th>${t("vad.chunks.text")}</th>
+            <th>${t("vad.chunks.audio")}</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -925,8 +997,10 @@ async function refreshHistory() {
       return;
     }
     $("#history-panel").hidden = false;
+    $("#history-detail").hidden = true;
     data.runs.forEach(r => {
       const tr = document.createElement("tr");
+      tr.dataset.id = r.id;
       tr.innerHTML = `
         <td>${formatTs(r.timestamp)}</td>
         <td class="num">${r.n_configs ?? "–"}</td>
@@ -935,9 +1009,54 @@ async function refreshHistory() {
         <td class="num">${(r.total_runtime_s ?? 0).toFixed(1)}s</td>
         <td class="num">${(r.audio_duration_s ?? 0).toFixed(1)}s</td>
       `;
+      tr.addEventListener("click", () => selectHistoryRun(r.id));
       body.appendChild(tr);
     });
   } catch { /* ignore */ }
+}
+
+async function selectHistoryRun(runId) {
+  $$("#history-body tr").forEach(tr => {
+    tr.classList.toggle("is-selected", tr.dataset.id === runId);
+  });
+  try {
+    const run = await fetch(`/api/history/${encodeURIComponent(runId)}`).then(r => r.json());
+    renderHistoryDetail(run);
+  } catch { /* ignore */ }
+}
+
+function renderHistoryDetail(run) {
+  const root = $("#history-detail");
+  const rows = (run.configs || []).map(c => `
+    <tr>
+      <td>${escapeHtml(c.config)}</td>
+      <td><span class="config-vad-toggle ${c.vad_enabled ? "is-on" : ""}"><span class="toggle-dot"></span>${c.vad_enabled ? "on" : "off"}</span></td>
+      <td class="num metric-cell metric-wer">${(c.wer ?? 0).toFixed(3)}</td>
+      <td class="num metric-cell metric-cer">${(c.cer ?? 0).toFixed(3)}</td>
+      <td class="num metric-cell metric-rtf">${(c.rtf ?? 0).toFixed(3)}</td>
+      <td class="num">${(c.runtime_s ?? 0).toFixed(1)}s</td>
+      <td class="num">${c.n_segments ?? "–"}</td>
+    </tr>
+  `).join("");
+  root.innerHTML = `
+    <h3>${t("history.detail.title").replace("{ts}", formatTs(run.timestamp))}</h3>
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th>${t("history.detail.colConfig")}</th>
+          <th>${t("history.detail.colVad")}</th>
+          <th class="num">${t("history.detail.colWer")}</th>
+          <th class="num">${t("history.detail.colCer")}</th>
+          <th class="num">${t("history.detail.colRtf")}</th>
+          <th class="num">${t("history.detail.colRuntime")}</th>
+          <th class="num">${t("history.detail.colSegments")}</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="muted history-detail-note">${t("history.detail.segmentsNote")}</div>
+  `;
+  root.hidden = false;
 }
 
 // ─── Helpers ────────────────────────────────────────────────

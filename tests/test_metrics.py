@@ -48,3 +48,23 @@ def test_word_alignment_empty():
     assert word_alignment("", "") == []
     assert all(p["kind"] == "insert" for p in word_alignment("", "hello"))
     assert all(p["kind"] == "delete" for p in word_alignment("hello", ""))
+
+
+def test_run_metrics_chunks_available_default_and_serialization():
+    from vad_bench.metrics import RunMetrics
+
+    rm = RunMetrics(
+        config="c", vad_enabled=True,
+        transcript_raw="", transcript_normalized="", reference_normalized="",
+        wer=0.0, cer=0.0, rtf=0.0, runtime_s=0.0, audio_duration_s=0.0,
+    )
+    assert rm.chunks_available is False
+    assert rm.to_dict()["chunks_available"] is False
+
+    rm2 = RunMetrics(
+        config="c", vad_enabled=True,
+        transcript_raw="", transcript_normalized="", reference_normalized="",
+        wer=0.0, cer=0.0, rtf=0.0, runtime_s=0.0, audio_duration_s=0.0,
+        chunks_available=True,
+    )
+    assert rm2.to_dict()["chunks_available"] is True

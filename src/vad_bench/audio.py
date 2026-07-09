@@ -66,3 +66,36 @@ def wav_duration(path: Path) -> float:
     """Seconds of audio in a WAV file (reads RIFF header, no decoding)."""
     with wave.open(str(path), "rb") as wf:
         return wf.getnframes() / wf.getframerate()
+
+
+def slice_wav_segments(
+    src: Path,
+    segments: list[tuple[float, float, str]],
+    out_dir: Path,
+) -> None:
+    """Slice ``src`` into one WAV file per ``(start_s, end_s, text)`` segment.
+
+    Stdlib ``wave`` only — no ffmpeg subprocess per chunk. ``src`` is already
+    16 kHz mono PCM16 (exactly what whisper-cli consumed), so raw frame
+    slicing is enough. Output files are named ``NNNN.wav`` (zero-padded
+    index, matching segment order) in ``out_dir``, created if missing.
+    No-op (no directory created) when ``segments`` is empty.
+    """
+    if not segments:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(src), "rb") as wf:
+        framerate = wf.getframerate()
+        sampwidth = wf.getsampwidth()
+        nchannels = wf.getnchannels()
+        for index, (start_s, end_s, _text) in enumerate(segments):
+            start_frame = int(start_s * framerate)
+            n_frames = int((end_s - start_s) * framerate)
+            wf.setpos(start_frame)
+            frames = wf.readframes(n_frames)
+            out_path = out_dir / f"{index:04d}.wav"
+            with wave.open(str(out_path), "wb") as out:
+                out.setnchannels(nchannels)
+                out.setsampwidth(sampwidth)
+                out.setframerate(framerate)
+                out.writeframes(frames)
