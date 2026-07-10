@@ -107,6 +107,8 @@ const I18N = {
     "vad.match.good":       "good overlap",
     "vad.match.partial":    "partial",
     "vad.match.none":       "no overlap",
+    "vad.subtab.regions":   "VAD Regions",
+    "vad.subtab.chunks":    "Audio Chunks",
     "vad.emptyTimeline":    "(audio timeline)",
     "vad.chunks.title":     "Audio chunks sent to Whisper",
     "vad.chunks.idx":       "#",
@@ -242,6 +244,8 @@ const I18N = {
     "vad.match.good":       "tumpang tindih baik",
     "vad.match.partial":    "sebagian",
     "vad.match.none":       "tidak ada tumpang tindih",
+    "vad.subtab.regions":   "Rincian VAD",
+    "vad.subtab.chunks":    "Potongan Audio",
     "vad.emptyTimeline":    "(timeline audio)",
     "vad.chunks.title":     "Potongan audio yang dikirim ke Whisper",
     "vad.chunks.idx":       "#",
@@ -913,33 +917,50 @@ function renderVadBreakdown(d, refSegments) {
       </div>
     </div>
 
-    <table class="vad-regions-table">
-      <thead>
-        <tr>
-          <th>${t("vad.regions.idx")}</th>
-          <th>${t("vad.regions.range")}</th>
-          <th class="num">${t("vad.regions.duration")}</th>
-          <th>${t("vad.regions.gtText")}</th>
-          <th>${t("vad.regions.hypText")}</th>
-          <th class="num">${t("vad.regions.match")}</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${perRegion.map(r => `
-          <tr>
-            <td>${r.index + 1}</td>
-            <td><span class="muted">${fmtMmSs(r.start)}–${fmtMmSs(r.end)}</span></td>
-            <td class="num">${r.duration.toFixed(1)}s</td>
-            <td>${escapeHtml(truncate(r.refText, 80))}</td>
-            <td>${escapeHtml(truncate(r.hypText, 80))}</td>
-            <td class="num ${matchCls(r.overlap)}" title="overlap=${r.overlap.toFixed(2)}">${(r.matchScore * 100).toFixed(0)}%</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
+    <div class="vad-subtabs">
+      <button type="button" class="vad-subtab is-active" data-subtab="regions">${t("vad.subtab.regions")}</button>
+      <button type="button" class="vad-subtab" data-subtab="chunks">${t("vad.subtab.chunks")}</button>
+    </div>
 
-    ${renderChunkList(d)}
+    <div class="vad-subpane" data-subpane="regions">
+      <table class="vad-regions-table">
+        <thead>
+          <tr>
+            <th>${t("vad.regions.idx")}</th>
+            <th>${t("vad.regions.range")}</th>
+            <th class="num">${t("vad.regions.duration")}</th>
+            <th>${t("vad.regions.gtText")}</th>
+            <th>${t("vad.regions.hypText")}</th>
+            <th class="num">${t("vad.regions.match")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${perRegion.map(r => `
+            <tr>
+              <td>${r.index + 1}</td>
+              <td><span class="muted">${fmtMmSs(r.start)}–${fmtMmSs(r.end)}</span></td>
+              <td class="num">${r.duration.toFixed(1)}s</td>
+              <td>${escapeHtml(truncate(r.refText, 80))}</td>
+              <td>${escapeHtml(truncate(r.hypText, 80))}</td>
+              <td class="num ${matchCls(r.overlap)}" title="overlap=${r.overlap.toFixed(2)}">${(r.matchScore * 100).toFixed(0)}%</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="vad-subpane" data-subpane="chunks" hidden>
+      ${renderChunkList(d)}
+    </div>
   `;
+
+  // Wire sub-tab switching.
+  root.querySelectorAll(".vad-subtab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      root.querySelectorAll(".vad-subtab").forEach(b => b.classList.toggle("is-active", b === btn));
+      root.querySelectorAll(".vad-subpane").forEach(p => p.hidden = (p.dataset.subpane !== btn.dataset.subtab));
+    });
+  });
 }
 
 function renderChunkList(d) {
