@@ -573,6 +573,9 @@ def transcribe(
         segments = []
         for i, (start_s, end_s) in enumerate(vad_segments):
             text = text_blocks[i] if i < len(text_blocks) else ""
+            # Strip stray leading brackets that whisper-cli sometimes
+            # prepends (e.g. "]  TEXT" from multi-file timestamp parsing).
+            text = text.lstrip("] [").strip()
             if text:
                 segments.append((start_s, end_s, text))
         total_speech = sum(e - s for s, e in vad_segments)
