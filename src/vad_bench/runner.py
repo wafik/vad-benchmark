@@ -28,7 +28,7 @@ from .engine import (
     parse_settings_overrides,
     transcribe,
 )
-from .metrics import RunMetrics, aggregate, cer, normalize, wer, word_alignment
+from .metrics import RunMetrics, aggregate, cer, normalize, per_region_wer, wer, word_alignment
 from .paths import CHUNKS_ROOT, HISTORY_ROOT, MODELS_ROOT, REPORTS_ROOT
 from .reference import load_reference, write_reference_artifacts
 from .sysmon import ResourceMonitor
@@ -226,7 +226,8 @@ def run(
                 })
                 raise
 
-            rm = _score(result, reference_text, audio_duration)
+            rm = _score(result, reference_text, audio_duration,
+                        ref_segments=segments)
             run_metrics.append(rm)
             run_records.append(_record_from_metrics(rm, s))
 
@@ -323,8 +324,21 @@ def run(
         monitor.stop()
 
 
-def _score(result: EngineResult, reference_norm: str, audio_duration_s: float) -> RunMetrics:
+def _score(result: EngineResult, reference_norm: str, audio_duration_s: float,
+           ref_segments: list[tuple[float, float, str]] | None = None) -> RunMetrics:
     hyp_norm = normalize(result.transcript)
+    n_segs = len(result.segments) if result.segments else None
+    speech_sec = result.speech_seconds
+    avg_dur = (speech_sec / n_segs) if (speech_sec and n_segs) else None
+
+    # Compute per-region WER/CER using real jiwer metrics (server-side).
+    pr_wer: list[dict] = []
+    if ref_segments and result.segments:
+        try:
+            pr_wer = per_region_wer(ref_segments, result.segments)
+        except Exception:
+            pass  # non-critical; UI falls back to client-side proxy
+
     return RunMetrics(
         config=result.config,
         vad_enabled=result.vad_enabled,
@@ -338,10 +352,12 @@ def _score(result: EngineResult, reference_norm: str, audio_duration_s: float) -
         audio_duration_s=audio_duration_s,
         speech_seconds=result.speech_seconds,
         silence_removed=result.silence_removed if result.vad_enabled else None,
-        n_segments=len(result.segments) if result.segments else None,
+        n_segments=n_segs,
         segments=result.segments,
         alignment=word_alignment(reference_norm, hyp_norm),
         chunks_available=bool(result.vad_enabled and result.segments),
+        per_region_wer=pr_wer,
+        avg_seg_duration=avg_dur,
     )
 
 
@@ -367,6 +383,7 @@ def _record_from_metrics(rm: RunMetrics, s: Settings) -> dict:
         "vad_speech_pad_ms": s.vad_speech_pad_ms,
         "vad_max_speech_s": s.vad_max_speech_s,
         "whisper_model": s.whisper_model,
+        "avg_seg_duration": rm.avg_seg_duration,
         "language": s.language,
         "threads": s.threads,
     }

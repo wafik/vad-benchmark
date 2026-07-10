@@ -169,6 +169,11 @@ class RunMetrics:
     # Optional aligned diff for the UI.
     alignment: list[dict] = field(default_factory=list)
     chunks_available: bool = False
+    # Per-region WER/CER from server-side computation (real jiwer metrics,
+    # not the simplified client-side word-overlap proxy).
+    per_region_wer: list[dict] = field(default_factory=list)
+    # Average segment duration in seconds (speech_seconds / n_segments).
+    avg_seg_duration: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -190,6 +195,8 @@ class RunMetrics:
             ],
             "alignment": self.alignment,
             "chunks_available": self.chunks_available,
+            "per_region_wer": self.per_region_wer,
+            "avg_seg_duration": self.avg_seg_duration,
         }
 
 

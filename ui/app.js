@@ -49,11 +49,20 @@ const I18N = {
     "tile.bestCer":         "Best CER",
     "tile.fastestRtf":      "Fastest RTF",
     "tile.totalRuntime":    "Total runtime",
+    "tile.segments":        "Segments",
+    "tile.speechCoverage":  "Speech coverage",
+    "results.modelsFmt":    "Models: {models}",
+    "results.resourceTitle":"Run resources",
+    "results.cpuAvg":       "CPU avg",
+    "results.ramPeak":      "RAM peak",
+    "results.gpuAvg":       "GPU avg",
     "table.config":         "Config",
     "table.vad":            "VAD",
     "table.wer":            "WER",
     "table.cer":            "CER",
     "table.rtf":            "RTF",
+    "table.avgSeg":         "Avg seg",
+    "table.model":          "Model",
     "table.runtime":        "Runtime",
     "table.silence":        "Silence removed",
     "table.segments":       "Segments",
@@ -186,6 +195,20 @@ const I18N = {
     "tile.bestCer":         "CER terbaik",
     "tile.fastestRtf":      "RTF tercepat",
     "tile.totalRuntime":    "Total runtime",
+    "tile.segments":        "Segmen",
+    "tile.speechCoverage":  "Cakupan bicara",
+    "results.modelsFmt":    "Model: {models}",
+    "results.resourceTitle":"Sumber daya run",
+    "results.cpuAvg":       "CPU rata-rata",
+    "results.ramPeak":      "RAM puncak",
+    "results.gpuAvg":       "GPU rata-rata",
+    "table.config":         "Config",
+    "table.vad":            "VAD",
+    "table.wer":            "WER",
+    "table.cer":            "CER",
+    "table.rtf":            "RTF",
+    "table.avgSeg":         "Rerata seg",
+    "table.model":          "Model",
     "table.config":         "Config",
     "table.vad":            "VAD",
     "table.wer":            "WER",
@@ -685,6 +708,23 @@ function renderResults(sum) {
     verdictEl.hidden = true;
   }
 
+  // Collect unique models from configs.
+  const models = [...new Set(sum.configs.map(c => c.whisper_model).filter(Boolean))];
+  const modelPills = models.map(m => {
+    const short = MODEL_DESCS[m]?.name || m.replace(/^ggml-/, "").replace(/\.bin$/, "");
+    return `<span class="model-pill">${escapeHtml(short)}</span>`;
+  }).join(" ");
+
+  // Compute segment & speech stats from VAD-enabled configs.
+  const vadConfigs = sum.configs.filter(c => c.n_segments != null);
+  const totalSegs = vadConfigs.reduce((a, c) => a + (c.n_segments || 0), 0);
+  const avgSegDur = vadConfigs.length
+    ? vadConfigs.reduce((a, c) => a + (c.avg_seg_duration || 0), 0) / vadConfigs.length
+    : null;
+  const speechCov = vadConfigs.length && sum.audio_duration_s
+    ? vadConfigs.reduce((a, c) => a + (c.speech_seconds || 0), 0) / vadConfigs.length / sum.audio_duration_s
+    : null;
+
   $("#results-summary").innerHTML = `
     <div class="summary-tile">
       <div class="tile-label">${t("tile.bestWer")}<button type="button" class="tip" data-tip-key="wer" aria-label="${escapeAttr(t("aria.wer"))}">?</button></div>
@@ -706,7 +746,30 @@ function renderResults(sum) {
       <div class="tile-value">${(sum.total_runtime_s || 0).toFixed(1)}s</div>
       <div class="tile-sub">${sum.configs.length} ${LANG === "id" ? "config" : "configs"}</div>
     </div>
+    <div class="summary-tile">
+      <div class="tile-label">${t("tile.segments")}</div>
+      <div class="tile-value">${totalSegs || "–"}</div>
+      <div class="tile-sub">${avgSegDur != null ? `avg ${avgSegDur.toFixed(1)}s` : "–"}</div>
+    </div>
+    <div class="summary-tile">
+      <div class="tile-label">${t("tile.speechCoverage")}</div>
+      <div class="tile-value">${speechCov != null ? (speechCov * 100).toFixed(1) + "%" : "–"}</div>
+      <div class="tile-sub">${(sum.audio_duration_s || 0).toFixed(0)}s ${LANG === "id" ? "audio" : "audio"}</div>
+    </div>
   `;
+
+  // Model pills under summary.
+  if (models.length) {
+    const modelsLine = t("results.modelsFmt").replace("{models}", modelPills);
+    let modelsEl = $("#results-models");
+    if (!modelsEl) {
+      modelsEl = document.createElement("div");
+      modelsEl.id = "results-models";
+      modelsEl.className = "results-models";
+      $("#results-summary").after(modelsEl);
+    }
+    modelsEl.innerHTML = modelsLine;
+  }
 
   // Re-bind tooltip text from current language.
   $$(".tip[data-tip-key]").forEach(btn => {
@@ -729,6 +792,8 @@ function renderResults(sum) {
     const werCls = colorClsRelative(c.wer, bestWer, worstWer);
     const cerCls = colorClsRelative(c.cer, bestCer, worstCer);
     const rtfCls = isRtfRealTime(c.rtf) ? "is-good" : (c.rtf == null ? "" : "is-bad");
+    const modelShort = MODEL_DESCS[c.whisper_model]?.name || (c.whisper_model || "–").replace(/^ggml-/, "").replace(/\.bin$/, "");
+    const modelParams = MODEL_DESCS[c.whisper_model]?.params || "";
     tr.innerHTML = `
       <td>${escapeHtml(c.config)}</td>
       <td><span class="config-vad-toggle ${c.vad_enabled ? "is-on" : ""}"><span class="toggle-dot"></span>${c.vad_enabled ? "on" : "off"}</span></td>
@@ -738,7 +803,8 @@ function renderResults(sum) {
       <td class="num">${(c.runtime_s ?? 0).toFixed(1)}s</td>
       <td class="num">${c.silence_removed != null ? (c.silence_removed * 100).toFixed(1) + "%" : "–"}</td>
       <td class="num">${c.n_segments ?? "–"}</td>
-      <td>${escapeHtml(c.whisper_model || "–")}</td>
+      <td class="num">${c.avg_seg_duration != null ? c.avg_seg_duration.toFixed(1) + "s" : "–"}</td>
+      <td><span class="model-cell" title="${escapeAttr(c.whisper_model || '')}">${escapeHtml(modelShort)}${modelParams ? ` <span class="model-params">(${modelParams})</span>` : ""}</span></td>
     `;
     tr.addEventListener("click", () => selectConfig(c.config));
     tbody.appendChild(tr);
@@ -750,6 +816,26 @@ function renderResults(sum) {
     .replace("{cer}", sum.best_cer_config || "–")
     .replace("{cerV}", bestCer ?? 0)
     .replace("{fast}", sum.fastest_rtf_config || "–");
+
+  // Resource summary from the run.
+  const res = sum.resources || {};
+  let resEl = $("#results-resources");
+  if (!resEl) {
+    resEl = document.createElement("div");
+    resEl.id = "results-resources";
+    resEl.className = "results-resources";
+    $("#best-line").after(resEl);
+  }
+  if (res.cpu_avg != null || res.ram_peak_mb != null || res.gpu_avg != null) {
+    resEl.innerHTML = `
+      <span><span class="res-label">${t("results.cpuAvg")}</span>${res.cpu_avg != null ? res.cpu_avg.toFixed(0) + "%" : "–"}</span>
+      <span><span class="res-label">${t("results.ramPeak")}</span>${res.ram_peak_mb != null ? res.ram_peak_mb.toFixed(0) + " MB" : "–"}</span>
+      <span><span class="res-label">${t("results.gpuAvg")}</span>${res.gpu_avg != null ? res.gpu_avg.toFixed(0) + "%" : "–"}</span>
+    `;
+    resEl.hidden = false;
+  } else {
+    resEl.hidden = true;
+  }
 
   if (sum.configs.length > 0) selectConfig(sum.configs[0].config);
 }
@@ -931,20 +1017,31 @@ function renderVadBreakdown(d, refSegments) {
             <th class="num">${t("vad.regions.duration")}</th>
             <th>${t("vad.regions.gtText")}</th>
             <th>${t("vad.regions.hypText")}</th>
+            <th class="num">${t("vad.regions.wer")}</th>
+            <th class="num">${t("vad.regions.cer")}</th>
             <th class="num">${t("vad.regions.match")}</th>
           </tr>
         </thead>
         <tbody>
-          ${perRegion.map(r => `
+          ${perRegion.map(r => {
+            // Use server-side WER/CER if available (real jiwer metrics).
+            const pr = (d.per_region_wer || [])[r.index];
+            const w = pr != null ? pr.wer : null;
+            const c = pr != null ? pr.cer : null;
+            const wCls = w != null ? (w <= 0.2 ? "match-good" : w <= 0.5 ? "match-partial" : "match-none") : "";
+            const cCls = c != null ? (c <= 0.2 ? "match-good" : c <= 0.5 ? "match-partial" : "match-none") : "";
+            return `
             <tr>
               <td>${r.index + 1}</td>
               <td><span class="muted">${fmtMmSs(r.start)}–${fmtMmSs(r.end)}</span></td>
               <td class="num">${r.duration.toFixed(1)}s</td>
               <td>${escapeHtml(truncate(r.refText, 80))}</td>
               <td>${escapeHtml(truncate(r.hypText, 80))}</td>
+              <td class="num ${wCls}">${w != null ? (w * 100).toFixed(0) + "%" : "–"}</td>
+              <td class="num ${cCls}">${c != null ? (c * 100).toFixed(0) + "%" : "–"}</td>
               <td class="num ${matchCls(r.overlap)}" title="overlap=${r.overlap.toFixed(2)}">${(r.matchScore * 100).toFixed(0)}%</td>
-            </tr>
-          `).join("")}
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
     </div>
@@ -1059,7 +1156,12 @@ async function selectHistoryRun(runId) {
 
 function renderHistoryDetail(run) {
   const root = $("#history-detail");
-  const rows = (run.configs || []).map(c => `
+  const rows = (run.configs || []).map(c => {
+    const modelShort = (c.whisper_model || "–").replace(/^ggml-/, "").replace(/\.bin$/, "");
+    const vadParams = c.vad_enabled
+      ? `thr=${c.vad_threshold ?? 0.5} speech≥${c.vad_min_speech_ms ?? 250}ms silence≥${c.vad_min_silence_ms ?? 100}ms`
+      : "";
+    return `
     <tr>
       <td>${escapeHtml(c.config)}</td>
       <td><span class="config-vad-toggle ${c.vad_enabled ? "is-on" : ""}"><span class="toggle-dot"></span>${c.vad_enabled ? "on" : "off"}</span></td>
@@ -1068,10 +1170,16 @@ function renderHistoryDetail(run) {
       <td class="num metric-cell metric-rtf">${(c.rtf ?? 0).toFixed(3)}</td>
       <td class="num">${(c.runtime_s ?? 0).toFixed(1)}s</td>
       <td class="num">${c.n_segments ?? "–"}</td>
-    </tr>
-  `).join("");
+      <td title="${escapeAttr(modelShort)}">${escapeHtml(modelShort)}</td>
+      <td class="muted" style="font-size:11px">${vadParams}</td>
+    </tr>`;
+  }).join("");
+
+  const verdict = run.verdict ? `<div class="results-verdict" style="margin:8px 0"><span class="verdict-label">${t("verdict.label")}</span> <span class="verdict-text">${escapeHtml(run.verdict)}</span></div>` : "";
+
   root.innerHTML = `
     <h3>${t("history.detail.title").replace("{ts}", formatTs(run.timestamp))}</h3>
+    ${verdict}
     <table class="history-table">
       <thead>
         <tr>
@@ -1082,6 +1190,8 @@ function renderHistoryDetail(run) {
           <th class="num">${t("history.detail.colRtf")}</th>
           <th class="num">${t("history.detail.colRuntime")}</th>
           <th class="num">${t("history.detail.colSegments")}</th>
+          <th>${t("table.model")}</th>
+          <th class="muted" style="font-size:11px">VAD params</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
