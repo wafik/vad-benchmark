@@ -26,7 +26,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -66,6 +68,9 @@ class EngineResult:
     # Per-segment (start_s, end_s, text) from the timestamped whisper-cli
     # output. Empty when --no-timestamps was on or parsing failed.
     segments: list[tuple[float, float, str]] = field(default_factory=list)
+    # VAD→original timestamp mapping when audio was pre-assembled from
+    # VAD boundaries. None when whisper handled VAD internally.
+    assembled_mapping: list[dict] | None = None
 
 
 def _hms_to_s(hms: str) -> float:
@@ -141,8 +146,173 @@ def _parse_progress(stderr: str, audio_duration_s: float) -> tuple[float | None,
     return reduced_fraction, speech_seconds
 
 
+# ─── VAD pre-computation ────────────────────────────────────────────────
+# Runs the standalone ``whisper-vad-speech-segments`` binary to get exact
+# speech-region boundaries *before* sending audio to whisper, so the
+# decoder's own timestamp segmentation can't produce arbitrarily long
+# segments (a known problem with fine-tuned models on long-form audio).
+
+
+def compute_vad_segments(
+    wav_path: Path,
+    vad_model_path: Path,
+    s: Settings,
+    cmd: str = "whisper-vad-speech-segments",
+    timeout_s: int = 120,
+) -> list[tuple[float, float]]:
+    """Run the standalone VAD binary and return ``[(start_s, end_s), ...]``.
+
+    The binary's stdout format (centiseconds)::
+
+        Speech segment 0: start = 64.00, end = 192.00
+
+    Each value is converted to seconds.  Raises ``RuntimeError`` on failure.
+    """
+    _VAD_OUT_RE = re.compile(
+        r"Speech segment \d+: start = ([\d.]+), end = ([\d.]+)"
+    )
+
+    # Build the command — mirror the ssh-or-direct pattern of _resolve_cmd
+    # but simpler: the VAD binary doesn't need model/audio path rewriting
+    # for the SSH case (caller handles that via the cmd string).
+    flags = [
+        "-f", wav_path.as_posix(),
+        "-vm", vad_model_path.as_posix(),
+        "-vt", str(s.vad_threshold),
+        "-vspd", str(s.vad_min_speech_ms),
+        "-vsd", str(s.vad_min_silence_ms),
+        "-vp", str(s.vad_speech_pad_ms),
+        "-np",
+    ]
+    if s.vad_max_speech_s > 0:
+        flags += ["-vmsd", str(s.vad_max_speech_s)]
+
+    looks_like_shell = (
+        " " in cmd
+        or any(op in cmd for op in ("|", ">", "<", "&", ";", "$"))
+    )
+    if looks_like_shell:
+        full_cmd = f"{cmd} {' '.join(shlex.quote(f) for f in flags)}"
+        use_shell = True
+    else:
+        full_cmd = [cmd] + flags
+        use_shell = False
+
+    proc = subprocess.run(
+        full_cmd, capture_output=True, text=True,
+        timeout=timeout_s, shell=use_shell,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"VAD binary failed (rc={proc.returncode}): "
+            f"{(proc.stderr or '').strip()[:300]}"
+        )
+
+    segments: list[tuple[float, float]] = []
+    for line in proc.stdout.splitlines():
+        m = _VAD_OUT_RE.search(line)
+        if m:
+            start = float(m.group(1)) / 100.0  # centiseconds → seconds
+            end = float(m.group(2)) / 100.0
+            if end > start:
+                segments.append((start, end))
+    return segments
+
+
+def assemble_vad_audio(
+    src_wav: Path,
+    vad_segments: list[tuple[float, float]],
+    out_path: Path,
+    gap_ms: int = 100,
+) -> list[dict]:
+    """Slice speech regions from ``src_wav`` and concatenate with silence gaps.
+
+    Writes an assembled WAV to ``out_path`` and returns a mapping table::
+
+        [{orig_start_s, orig_end_s, assembled_start_s, assembled_end_s}, ...]
+
+    The mapping is used to translate whisper's assembled-buffer timestamps
+    back to original-audio timestamps.  Uses stdlib ``wave`` only.
+    """
+    gap_frames = int(gap_ms / 1000.0 * 16000)  # assume 16 kHz (matches src)
+    mapping: list[dict] = []
+    assembled_offset = 0  # running frame offset in the output
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with wave.open(str(src_wav), "rb") as src:
+        fr = src.getframerate()
+        sw = src.getsampwidth()
+        nc = src.getnchannels()
+        gap_frames = int(gap_ms / 1000.0 * fr)
+
+        with wave.open(str(out_path), "wb") as dst:
+            dst.setnchannels(nc)
+            dst.setsampwidth(sw)
+            dst.setframerate(fr)
+
+            for i, (start_s, end_s) in enumerate(vad_segments):
+                start_frame = int(start_s * fr)
+                n_frames = int((end_s - start_s) * fr)
+                src.setpos(start_frame)
+                frames = src.readframes(n_frames)
+                dst.writeframes(frames)
+
+                assembled_start = assembled_offset / fr
+                assembled_end = (assembled_offset + n_frames) / fr
+                mapping.append({
+                    "orig_start_s": start_s,
+                    "orig_end_s": end_s,
+                    "assembled_start_s": assembled_start,
+                    "assembled_end_s": assembled_end,
+                })
+                assembled_offset += n_frames
+
+                # Silence gap between segments (not after the last one)
+                if i < len(vad_segments) - 1 and gap_frames > 0:
+                    dst.writeframes(b"\x00" * (sw * nc * gap_frames))
+                    assembled_offset += gap_frames
+
+    return mapping
+
+
+def _map_timestamp(
+    t: float,
+    mapping: list[dict],
+) -> float:
+    """Map a timestamp from assembled-buffer time back to original-audio time.
+
+    Finds the VAD region whose assembled window contains ``t`` and applies
+    the linear offset.  When ``t`` falls in a gap between segments (e.g.
+    the 100ms silence gap or floating-point boundary imprecision), the
+    nearest segment is used.  Falls back to the last region's end if ``t``
+    is past all assembled segments (e.g. trailing silence whisper might emit).
+    """
+    best_idx = 0
+    best_dist = float("inf")
+    for i, seg in enumerate(mapping):
+        # Distance: 0 if inside the window, otherwise distance to nearest edge.
+        if seg["assembled_start_s"] <= t <= seg["assembled_end_s"]:
+            best_idx = i
+            best_dist = 0.0
+            break
+        dist = min(abs(t - seg["assembled_start_s"]),
+                   abs(t - seg["assembled_end_s"]))
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
+    seg = mapping[best_idx]
+    mapped = seg["orig_start_s"] + (t - seg["assembled_start_s"])
+    # Clamp: if t is past the last assembled segment, don't extrapolate
+    # beyond the last segment's original end.
+    if best_idx == len(mapping) - 1 and t > seg["assembled_end_s"]:
+        mapped = seg["orig_end_s"]
+    return mapped
+
+
 def _resolve_cmd(cmd_str: str, model_path: Path, vad_model_path: Path | None,
-                 wav_path: Path, s: Settings) -> tuple[list[str] | str, bool]:
+                 wav_path: Path, s: Settings,
+                 skip_vad: bool = False) -> tuple[list[str] | str, bool]:
     """Turn the configured ``WHISPER_CLI_CMD`` into a final command + shell flag.
 
     Two modes:
@@ -155,7 +325,8 @@ def _resolve_cmd(cmd_str: str, model_path: Path, vad_model_path: Path | None,
 
     Returns ``(command, use_shell)``.
     """
-    flags = _whisper_flags(model_path, vad_model_path, wav_path, s)
+    flags = _whisper_flags(model_path, vad_model_path, wav_path, s,
+                           skip_vad=skip_vad)
 
     if not cmd_str or not cmd_str.strip():
         raise RuntimeError("WHISPER_CLI_CMD is empty")
@@ -178,12 +349,16 @@ def _resolve_cmd(cmd_str: str, model_path: Path, vad_model_path: Path | None,
 
 
 def _whisper_flags(model_path: Path, vad_model_path: Path | None,
-                   wav_path: Path, s: Settings) -> list[str]:
+                   wav_path: Path, s: Settings,
+                   skip_vad: bool = False) -> list[str]:
     """Build the whisper-cli flag list (model/audio/VAD knobs).
 
     Paths are emitted as POSIX (``/…``) form when running on Windows, so the
     SSH transport doesn't strip backslashes. whisper-cli accepts forward
     slashes on every platform.
+
+    When ``skip_vad`` is True, all ``--vad*`` flags are omitted — the caller
+    has already pre-computed VAD segments and assembled a speech-only buffer.
     """
     def _pp(p: Path) -> str:
         return p.as_posix()
@@ -200,7 +375,7 @@ def _whisper_flags(model_path: Path, vad_model_path: Path | None,
         # summary line from there. The transcript still lands on stdout.
         "--print-progress",
     ]
-    if s.vad_enabled and vad_model_path is not None:
+    if s.vad_enabled and vad_model_path is not None and not skip_vad:
         flags += ["--vad", "--vad-model", _pp(vad_model_path)]
         if s.vad_threshold != 0.5:
             flags += ["--vad-threshold", str(s.vad_threshold)]
@@ -223,12 +398,20 @@ def transcribe(
     models_root: Path,
     audio_duration_s: float | None = None,
     timeout_s: int = 600,
+    vad_segments: list[tuple[float, float]] | None = None,
 ) -> EngineResult:
     """Run whisper-cli on ``wav_path`` and return the parsed result.
 
     ``audio_duration_s`` is used to convert the VAD sample-reduction into a
     seconds-based ``speech_seconds``. If omitted (None), ``speech_seconds``
     is left as None even when silence_removed is known.
+
+    When ``vad_segments`` is provided (pre-computed by ``compute_vad_segments``),
+    the audio is assembled from those speech regions with silence gaps and
+    whisper runs *without* ``--vad``.  Timestamps in the output are mapped
+    back to original-audio positions via the assembly mapping table.
+    When ``vad_segments`` is None (default), whisper runs with its built-in
+    ``--vad`` as before.
     """
     model_path = models_root / settings.whisper_model
     if not model_path.exists():
@@ -246,27 +429,57 @@ def transcribe(
                 f"Download: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-silero-v6.2.0.bin"
             )
 
+    # ── VAD pre-computation path ───────────────────────────────────────
+    # When pre-computed VAD segments are provided, assemble a speech-only
+    # buffer and run whisper *without* --vad.  This gives us control over
+    # segmentation: each VAD region maps to one whisper output segment,
+    # regardless of the whisper model's decoder behaviour.
+    assembled_path: Path | None = None
+    assembled_mapping: list[dict] | None = None
+    skip_vad = False
+
+    if vad_segments and settings.vad_enabled:
+        skip_vad = True
+        assembled_path = Path(tempfile.mktemp(suffix=".wav"))
+        assembled_mapping = assemble_vad_audio(
+            wav_path, vad_segments, assembled_path, gap_ms=100,
+        )
+        # Use the assembled audio for whisper; the original wav_path is
+        # kept aside for chunk slicing later (runner needs the real
+        # timestamps in the original audio).
+        wav_for_whisper = assembled_path
+        log.info(
+            "VAD pre-computed: %d regions → assembled %.1fs buffer",
+            len(vad_segments),
+            assembled_mapping[-1]["assembled_end_s"] if assembled_mapping else 0,
+        )
+    else:
+        wav_for_whisper = wav_path
+
     # If WHISPER_CLI_CMD routes through `ssh …`, the whisper-cli process runs
     # on the remote host, so it needs its own copies of (wav, model, vad_model).
     # Sync them to a stable scratch dir on the remote and rewrite the cmd paths
     # to point there. This makes "run whisper on the Jetson from Windows" work
     # without manual scp.
-    remote = _maybe_sync_remote(
-        settings.whisper_cli_cmd,
-        local_paths={"wav": wav_path, "model": model_path, "vad": vad_model_path},
-    )
+    local_sync_paths: dict[str, Path | None] = {
+        "wav": wav_for_whisper,
+        "model": model_path,
+        "vad": vad_model_path if not skip_vad else None,
+    }
+    remote = _maybe_sync_remote(settings.whisper_cli_cmd, local_paths=local_sync_paths)
 
     # Stash the local-POSIX paths so _rewrite_remote_paths can identify them
     # inside the resolved cmd. Order matches the dict above.
     if remote:
         _rewrite_remote_paths._local_paths = [
-            wav_path.as_posix(),
+            wav_for_whisper.as_posix(),
             model_path.as_posix(),
-            vad_model_path.as_posix() if vad_model_path else None,
+            vad_model_path.as_posix() if (vad_model_path and not skip_vad) else None,
         ]
 
     cmd, use_shell = _resolve_cmd(
-        settings.whisper_cli_cmd, model_path, vad_model_path, wav_path, settings
+        settings.whisper_cli_cmd, model_path, vad_model_path,
+        wav_for_whisper, settings, skip_vad=skip_vad,
     )
 
     if remote:
@@ -297,6 +510,10 @@ def transcribe(
             f"Set WHISPER_CLI_CMD to a valid binary or shell command. "
             f"Underlying: {exc}"
         ) from exc
+    finally:
+        # Clean up the temporary assembled WAV.
+        if assembled_path and assembled_path.exists():
+            assembled_path.unlink(missing_ok=True)
     runtime_s = time.perf_counter() - t0
 
     stderr = proc.stderr or ""
@@ -324,8 +541,27 @@ def transcribe(
             f"cmd: {cmd_str_repr}\nstderr: {stderr.strip()[:500]}"
         )
 
-    silence_removed, speech_seconds = _parse_progress(stderr, audio_duration_s or 0.0)
     segments = _parse_segments(stdout)
+
+    if assembled_mapping and segments:
+        # Map assembled-buffer timestamps → original-audio timestamps.
+        segments = [
+            (_map_timestamp(s, assembled_mapping),
+             _map_timestamp(e, assembled_mapping),
+             t)
+            for s, e, t in segments
+        ]
+        # Compute silence_removed from VAD boundaries (more accurate than
+        # whisper's stderr line, which is about the assembled buffer).
+        total_speech = sum(e - s for s, e in vad_segments)
+        dur = audio_duration_s or 0.0
+        silence_removed = (1.0 - total_speech / dur) if dur > 0 else None
+        speech_seconds = total_speech if dur > 0 else None
+    else:
+        silence_removed, speech_seconds = _parse_progress(
+            stderr, audio_duration_s or 0.0,
+        )
+
     # The transcript is the joined text of the segments when we have them —
     # avoids double-counting timestamps in the user-facing transcript.
     if segments:
@@ -344,6 +580,7 @@ def transcribe(
         cmd=cmd,
         raw_stdout=stdout,
         raw_stderr=stderr,
+        assembled_mapping=assembled_mapping,
     )
 
 # scp/ssh are sync — short hops are tolerable for a benchmark. Use a stable

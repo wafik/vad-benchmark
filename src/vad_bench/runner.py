@@ -15,13 +15,19 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .audio import ensure_wav, slice_wav_segments, wav_duration
 from .config import Settings
-from .engine import EngineResult, parse_settings_overrides, transcribe
+from .engine import (
+    EngineResult,
+    compute_vad_segments,
+    parse_settings_overrides,
+    transcribe,
+)
 from .metrics import RunMetrics, aggregate, cer, normalize, wer, word_alignment
 from .paths import CHUNKS_ROOT, HISTORY_ROOT, MODELS_ROOT, REPORTS_ROOT
 from .reference import load_reference, write_reference_artifacts
@@ -81,6 +87,25 @@ def _write_status(status: dict) -> None:
     if last_err is not None:
         import warnings
         warnings.warn(f"_write_status fell back to non-atomic write: {last_err}")
+
+
+def _vad_binary_cmd() -> str:
+    """Return the whisper-vad-speech-segments command, respecting the SSH
+    transport configured in ``WHISPER_CLI_CMD``.
+
+    If whisper-cli is reached via ``ssh jetson-nano-ssh '…/whisper-cli'``,
+    we mirror that to ``ssh jetson-nano-ssh '…/whisper-vad-speech-segments'``.
+    For absolute paths (e.g. ``/path/to/whisper-cli``), replace the filename.
+    For bare names, assume the VAD binary is on PATH.
+    """
+    from .config import get_settings
+    cli_cmd = get_settings().whisper_cli_cmd
+    # SSH form: "ssh [opts] HOST '…/whisper-cli'"
+    if cli_cmd.strip().startswith("ssh "):
+        return re.sub(r"whisper-cli\b", "whisper-vad-speech-segments", cli_cmd)
+    # Absolute path or relative path: replace the filename component.
+    p = Path(cli_cmd)
+    return str(p.parent / "whisper-vad-speech-segments")
 
 
 def run(
@@ -162,12 +187,33 @@ def run(
             print(f"[{idx}/{len(configs)}] {name}: vad={s.vad_enabled}", flush=True)
 
             try:
+                # Pre-compute VAD segments so we control segmentation
+                # instead of whisper's decoder deciding segment boundaries.
+                vad_segs = None
+                if s.vad_enabled:
+                    vad_model = MODELS_ROOT / s.vad_model_path
+                    if vad_model.exists():
+                        try:
+                            vad_segs = compute_vad_segments(
+                                wav, vad_model, s,
+                                cmd=_vad_binary_cmd(),
+                            )
+                            log.info("VAD pre-computed %d segments for %s",
+                                     len(vad_segs), name)
+                        except Exception as exc:
+                            log.warning(
+                                "VAD pre-computation failed (%s), "
+                                "falling back to whisper --vad: %s",
+                                type(exc).__name__, exc,
+                            )
+
                 result: EngineResult = transcribe(
                     wav,
                     config=name,
                     settings=s,
                     models_root=MODELS_ROOT,
                     audio_duration_s=audio_duration,
+                    vad_segments=vad_segs,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.exception("Config %s failed", name)
