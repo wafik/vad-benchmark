@@ -219,95 +219,72 @@ def compute_vad_segments(
     return segments
 
 
-def assemble_vad_audio(
+def _slice_vad_regions(
     src_wav: Path,
     vad_segments: list[tuple[float, float]],
-    out_path: Path,
-    gap_ms: int = 100,
-) -> list[dict]:
-    """Slice speech regions from ``src_wav`` and concatenate with silence gaps.
+    out_dir: Path,
+) -> list[Path]:
+    """Write each VAD region as a separate WAV file in ``out_dir``.
 
-    Writes an assembled WAV to ``out_path`` and returns a mapping table::
-
-        [{orig_start_s, orig_end_s, assembled_start_s, assembled_end_s}, ...]
-
-    The mapping is used to translate whisper's assembled-buffer timestamps
-    back to original-audio timestamps.  Uses stdlib ``wave`` only.
+    Files are named ``0000.wav``, ``0001.wav``, …  Returns the list of
+    written file paths (same order as ``vad_segments``).  Used by the
+    per-region transcription path which avoids concatenating regions into
+    one buffer (and thus avoids the fine-tuned model's broken decoder
+    segmentation).
     """
-    gap_frames = int(gap_ms / 1000.0 * 16000)  # assume 16 kHz (matches src)
-    mapping: list[dict] = []
-    assembled_offset = 0  # running frame offset in the output
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
     with wave.open(str(src_wav), "rb") as src:
         fr = src.getframerate()
         sw = src.getsampwidth()
         nc = src.getnchannels()
-        gap_frames = int(gap_ms / 1000.0 * fr)
-
-        with wave.open(str(out_path), "wb") as dst:
-            dst.setnchannels(nc)
-            dst.setsampwidth(sw)
-            dst.setframerate(fr)
-
-            for i, (start_s, end_s) in enumerate(vad_segments):
-                start_frame = int(start_s * fr)
-                n_frames = int((end_s - start_s) * fr)
-                src.setpos(start_frame)
-                frames = src.readframes(n_frames)
+        for i, (start_s, end_s) in enumerate(vad_segments):
+            start_frame = int(start_s * fr)
+            n_frames = int((end_s - start_s) * fr)
+            src.setpos(start_frame)
+            frames = src.readframes(n_frames)
+            p = out_dir / f"{i:04d}.wav"
+            with wave.open(str(p), "wb") as dst:
+                dst.setnchannels(nc)
+                dst.setsampwidth(sw)
+                dst.setframerate(fr)
                 dst.writeframes(frames)
-
-                assembled_start = assembled_offset / fr
-                assembled_end = (assembled_offset + n_frames) / fr
-                mapping.append({
-                    "orig_start_s": start_s,
-                    "orig_end_s": end_s,
-                    "assembled_start_s": assembled_start,
-                    "assembled_end_s": assembled_end,
-                })
-                assembled_offset += n_frames
-
-                # Silence gap between segments (not after the last one)
-                if i < len(vad_segments) - 1 and gap_frames > 0:
-                    dst.writeframes(b"\x00" * (sw * nc * gap_frames))
-                    assembled_offset += gap_frames
-
-    return mapping
+            paths.append(p)
+    return paths
 
 
-def _map_timestamp(
-    t: float,
-    mapping: list[dict],
-) -> float:
-    """Map a timestamp from assembled-buffer time back to original-audio time.
+def _parse_multi_file_output(stdout: str) -> list[str]:
+    """Parse multi-file whisper-cli stdout into per-file text blocks.
 
-    Finds the VAD region whose assembled window contains ``t`` and applies
-    the linear offset.  When ``t`` falls in a gap between segments (e.g.
-    the 100ms silence gap or floating-point boundary imprecision), the
-    nearest segment is used.  Falls back to the last region's end if ``t``
-    is past all assembled segments (e.g. trailing silence whisper might emit).
+    whisper-cli separates per-file output with blank lines when given
+    multiple ``-f`` flags.  Each block's timestamp lines are stripped
+    and the remaining text is joined.  Returns ``[text_file0, text_file1, ...]``.
     """
-    best_idx = 0
-    best_dist = float("inf")
-    for i, seg in enumerate(mapping):
-        # Distance: 0 if inside the window, otherwise distance to nearest edge.
-        if seg["assembled_start_s"] <= t <= seg["assembled_end_s"]:
-            best_idx = i
-            best_dist = 0.0
-            break
-        dist = min(abs(t - seg["assembled_start_s"]),
-                   abs(t - seg["assembled_end_s"]))
-        if dist < best_dist:
-            best_dist = dist
-            best_idx = i
-    seg = mapping[best_idx]
-    mapped = seg["orig_start_s"] + (t - seg["assembled_start_s"])
-    # Clamp: if t is past the last assembled segment, don't extrapolate
-    # beyond the last segment's original end.
-    if best_idx == len(mapping) - 1 and t > seg["assembled_end_s"]:
-        mapped = seg["orig_end_s"]
-    return mapped
+    if not stdout:
+        return []
+    blocks: list[str] = []
+    current_lines: list[str] = []
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if current_lines:
+                blocks.append(" ".join(current_lines).strip())
+                current_lines = []
+        elif stripped.startswith("["):
+            # Timestamp line like [00:00:00.000 --> 00:00:30.000]  text here
+            ts_match = _SEGMENT_RE.search(stripped)
+            if ts_match:
+                text = stripped[ts_match.end(2):].strip().lstrip("]").strip()
+                if text:
+                    current_lines.append(text)
+        elif stripped.startswith("3 matches") or stripped.startswith("file"):
+            # whisper-cli multi-file summary header — skip
+            continue
+        else:
+            current_lines.append(stripped)
+    if current_lines:
+        blocks.append(" ".join(current_lines).strip())
+    return blocks
 
 
 def _resolve_cmd(cmd_str: str, model_path: Path, vad_model_path: Path | None,
@@ -430,64 +407,99 @@ def transcribe(
             )
 
     # ── VAD pre-computation path ───────────────────────────────────────
-    # When pre-computed VAD segments are provided, assemble a speech-only
-    # buffer and run whisper *without* --vad.  This gives us control over
-    # segmentation: each VAD region maps to one whisper output segment,
-    # regardless of the whisper model's decoder behaviour.
-    assembled_path: Path | None = None
-    assembled_mapping: list[dict] | None = None
+    # When pre-computed VAD segments are provided, write each region as a
+    # separate WAV file and pass all to whisper-cli in multi-file mode.
+    # This avoids concatenating regions into one buffer, which causes the
+    # fine-tuned model's decoder to merge regions (it ignores artificial
+    # silence gaps and always produces ~30s output segments).
+    # Segment boundaries use the known VAD timestamps, not whisper's
+    # broken decoder timestamps.
+    _region_dir: Path | None = None
+    _remote_scratch_region_files: list[str] = []
     skip_vad = False
+    is_remote = _is_ssh_command(settings.whisper_cli_cmd)
 
     if vad_segments and settings.vad_enabled:
         skip_vad = True
-        assembled_path = Path(tempfile.mktemp(suffix=".wav"))
-        assembled_mapping = assemble_vad_audio(
-            wav_path, vad_segments, assembled_path, gap_ms=100,
-        )
-        # Use the assembled audio for whisper; the original wav_path is
-        # kept aside for chunk slicing later (runner needs the real
-        # timestamps in the original audio).
-        wav_for_whisper = assembled_path
+        _region_dir = Path(tempfile.mkdtemp(prefix="vad_regions_"))
+        region_files = _slice_vad_regions(wav_path, vad_segments, _region_dir)
         log.info(
-            "VAD pre-computed: %d regions → assembled %.1fs buffer",
-            len(vad_segments),
-            assembled_mapping[-1]["assembled_end_s"] if assembled_mapping else 0,
+            "VAD pre-computed: %d regions → %d region WAVs",
+            len(vad_segments), len(region_files),
         )
+
+        # Build whisper-cli command: same flags as normal, but with all
+        # region files as separate -f arguments (multi-file mode).
+        flags = _whisper_flags(model_path, vad_model_path, wav_path, settings,
+                               skip_vad=True)
+        # Replace the single -f flag with all region file flags.
+        flags_no_f = []
+        it = iter(flags)
+        for tok in it:
+            if tok == "-f":
+                next(it, None)  # skip the original -f argument
+            else:
+                flags_no_f.append(tok)
+
+        if is_remote:
+            # Sync region files to remote scratch dir before running.
+            import hashlib
+            for rp in region_files:
+                h = hashlib.sha1(str(rp.resolve()).encode()).hexdigest()[:10]
+                remote_path = f"{_REMOTE_SCRATCH}/{h}_{rp.name}"
+                subprocess.run(
+                    ["scp", "-q", str(rp), f"{_extract_ssh_host(settings.whisper_cli_cmd)}:{remote_path}"],
+                    check=True, capture_output=True, timeout=60,
+                )
+                _remote_scratch_region_files.append(remote_path)
+            # Rebuild command with remote paths.
+            f_flags = []
+            for rp in _remote_scratch_region_files:
+                f_flags += ["-f", rp]
+            cmd_tokens = flags_no_f + f_flags
+            cmd = f"{settings.whisper_cli_cmd} {' '.join(shlex.quote(f) for f in cmd_tokens)}"
+            use_shell = True
+        else:
+            # Local: whisper-cli reads region files directly.
+            f_flags = []
+            for rp in region_files:
+                f_flags += ["-f", rp.as_posix()]
+            cmd_tokens = [settings.whisper_cli_cmd] + flags_no_f + f_flags
+            cmd = cmd_tokens
+            use_shell = False
     else:
-        wav_for_whisper = wav_path
+        # ── Single-file path (no VAD pre-computation) ──────────────────
+        # If WHISPER_CLI_CMD routes through `ssh …`, the whisper-cli process runs
+        # on the remote host, so it needs its own copies of (wav, model, vad_model).
+        # Sync them to a stable scratch dir on the remote and rewrite the cmd paths
+        # to point there. This makes "run whisper on the Jetson from Windows" work
+        # without manual scp.
+        local_sync_paths: dict[str, Path | None] = {
+            "wav": wav_path,
+            "model": model_path,
+            "vad": vad_model_path,
+        }
+        remote = _maybe_sync_remote(settings.whisper_cli_cmd, local_paths=local_sync_paths)
 
-    # If WHISPER_CLI_CMD routes through `ssh …`, the whisper-cli process runs
-    # on the remote host, so it needs its own copies of (wav, model, vad_model).
-    # Sync them to a stable scratch dir on the remote and rewrite the cmd paths
-    # to point there. This makes "run whisper on the Jetson from Windows" work
-    # without manual scp.
-    local_sync_paths: dict[str, Path | None] = {
-        "wav": wav_for_whisper,
-        "model": model_path,
-        "vad": vad_model_path if not skip_vad else None,
-    }
-    remote = _maybe_sync_remote(settings.whisper_cli_cmd, local_paths=local_sync_paths)
+        # Stash the local-POSIX paths so _rewrite_remote_paths can identify them
+        # inside the resolved cmd. Order matches the dict above.
+        if remote:
+            _rewrite_remote_paths._local_paths = [
+                wav_path.as_posix(),
+                model_path.as_posix(),
+                vad_model_path.as_posix() if vad_model_path else None,
+            ]
 
-    # Stash the local-POSIX paths so _rewrite_remote_paths can identify them
-    # inside the resolved cmd. Order matches the dict above.
-    if remote:
-        _rewrite_remote_paths._local_paths = [
-            wav_for_whisper.as_posix(),
-            model_path.as_posix(),
-            vad_model_path.as_posix() if (vad_model_path and not skip_vad) else None,
-        ]
+        cmd, use_shell = _resolve_cmd(
+            settings.whisper_cli_cmd, model_path, vad_model_path,
+            wav_path, settings, skip_vad=False,
+        )
 
-    cmd, use_shell = _resolve_cmd(
-        settings.whisper_cli_cmd, model_path, vad_model_path,
-        wav_for_whisper, settings, skip_vad=skip_vad,
-    )
-
-    if remote:
-        cmd = _rewrite_remote_paths(cmd, remote)
+        if remote:
+            cmd = _rewrite_remote_paths(cmd, remote)
 
     if not use_shell:
-        # Validate the binary up-front for a friendlier error.
-        binary = cmd[0]
+        binary = cmd[0] if isinstance(cmd, list) else cmd.split()[0]
         if shutil.which(binary) is None and not Path(binary).exists():
             raise FileNotFoundError(
                 f"whisper-cli not found: {binary!r}. Set WHISPER_CLI_CMD to a "
@@ -511,9 +523,21 @@ def transcribe(
             f"Underlying: {exc}"
         ) from exc
     finally:
-        # Clean up the temporary assembled WAV.
-        if assembled_path and assembled_path.exists():
-            assembled_path.unlink(missing_ok=True)
+        # Clean up temp region files.
+        if _region_dir and _region_dir.exists():
+            shutil.rmtree(_region_dir, ignore_errors=True)
+        if is_remote and _remote_scratch_region_files:
+            # Clean up remote scratch region files.
+            try:
+                host = _extract_ssh_host(settings.whisper_cli_cmd)
+                if host:
+                    rm_cmd = "rm -f " + " ".join(shlex.quote(f) for f in _remote_scratch_region_files)
+                    subprocess.run(
+                        ["ssh", host, rm_cmd],
+                        capture_output=True, timeout=15,
+                    )
+            except Exception:
+                pass
     runtime_s = time.perf_counter() - t0
 
     stderr = proc.stderr or ""
@@ -541,29 +565,26 @@ def transcribe(
             f"cmd: {cmd_str_repr}\nstderr: {stderr.strip()[:500]}"
         )
 
-    segments = _parse_segments(stdout)
-
-    if assembled_mapping and segments:
-        # Map assembled-buffer timestamps → original-audio timestamps.
-        segments = [
-            (_map_timestamp(s, assembled_mapping),
-             _map_timestamp(e, assembled_mapping),
-             t)
-            for s, e, t in segments
-        ]
-        # Compute silence_removed from VAD boundaries (more accurate than
-        # whisper's stderr line, which is about the assembled buffer).
+    # ── Parse output and build segments ─────────────────────────────────
+    if _region_dir and vad_segments:
+        # Multi-file VAD path: parse blank-line-separated blocks and pair
+        # each with the known VAD region boundaries.
+        text_blocks = _parse_multi_file_output(stdout)
+        segments = []
+        for i, (start_s, end_s) in enumerate(vad_segments):
+            text = text_blocks[i] if i < len(text_blocks) else ""
+            if text:
+                segments.append((start_s, end_s, text))
         total_speech = sum(e - s for s, e in vad_segments)
         dur = audio_duration_s or 0.0
         silence_removed = (1.0 - total_speech / dur) if dur > 0 else None
         speech_seconds = total_speech if dur > 0 else None
     else:
+        segments = _parse_segments(stdout)
         silence_removed, speech_seconds = _parse_progress(
             stderr, audio_duration_s or 0.0,
         )
 
-    # The transcript is the joined text of the segments when we have them —
-    # avoids double-counting timestamps in the user-facing transcript.
     if segments:
         transcript = " ".join(t for _, _, t in segments if t).strip()
     else:
@@ -580,7 +601,6 @@ def transcribe(
         cmd=cmd,
         raw_stdout=stdout,
         raw_stderr=stderr,
-        assembled_mapping=assembled_mapping,
     )
 
 # scp/ssh are sync — short hops are tolerable for a benchmark. Use a stable
