@@ -281,6 +281,7 @@ const I18N = {
 let LANG = "id";                     // default ID
 let CFG = null;                      // runtime config from /api/config
 let MODELS = [];                     // available .bin files
+let MODEL_DESCS = {};                // filename -> {name, params, description}
 let LAST_SUMMARY = null;             // latest /api/summary
 let RUNNING = false;
 let sseSource = null;
@@ -402,7 +403,13 @@ async function loadModels() {
   try {
     const data = await fetch("/api/models").then(r => r.json());
     MODELS = data.available || [];
-  } catch { MODELS = []; }
+    MODEL_DESCS = data.descriptions || {};
+  } catch { MODELS = []; MODEL_DESCS = {}; }
+}
+
+function modelLabel(filename) {
+  const d = MODEL_DESCS[filename];
+  return d ? `${d.name} (${d.params}) — ${filename}` : filename;
 }
 
 // ─── System resources ──────────────────────────────────────
@@ -509,11 +516,11 @@ function configCard(cfg, index) {
     <div class="config-card-grid">
       <div class="field">
         <span class="field-label" data-i18n-key="field.whisper">${t("field.whisper")}</span>
-        <select data-role="whisper_model">
+        <select data-role="whisper_model" title="${escapeAttr((MODEL_DESCS[ov.whisper_model || CFG.whisper_model] || {}).description || "")}">
           ${MODELS.length === 0
               ? `<option value="${escapeAttr(CFG.whisper_model)}">${escapeHtml(CFG.whisper_model)}</option>`
               : MODELS.filter(m => !/silero/i.test(m)).map(m =>
-                  `<option value="${escapeAttr(m)}" ${m === (ov.whisper_model || CFG.whisper_model) ? "selected" : ""}>${escapeHtml(m)}</option>`
+                  `<option value="${escapeAttr(m)}" ${m === (ov.whisper_model || CFG.whisper_model) ? "selected" : ""}>${escapeHtml(modelLabel(m))}</option>`
                 ).join("")}
         </select>
       </div>
@@ -551,6 +558,10 @@ function configCard(cfg, index) {
       </div>
     </div>
   `;
+
+  card.querySelector('[data-role="whisper_model"]').addEventListener("change", (e) => {
+    e.target.title = (MODEL_DESCS[e.target.value] || {}).description || "";
+  });
 
   const vadBtn = card.querySelector('[data-role="vad-toggle"]');
   const vadLabel = card.querySelector('[data-role="vad-label"]');

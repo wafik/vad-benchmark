@@ -51,6 +51,42 @@ from .runner import RUN_STATUS_PATH, run as run_benchmark, read_status
 log = logging.getLogger(__name__)
 
 
+# Display metadata for whisper models, mirrored from the sibling
+# whisper-benchmark project (web/app.py MODEL_DESCRIPTIONS) so the dropdown
+# shows the same names/params instead of bare filenames. Keyed by filename;
+# models not listed here still work, just without the extra metadata.
+MODEL_DESCRIPTIONS: dict[str, dict] = {
+    "ggml-tiny.bin": {
+        "name": "Whisper Tiny (multilingual)", "params": "39M",
+        "description": "Smallest OpenAI Whisper model. Supports 99 languages with lower accuracy than larger models.",
+    },
+    "ggml-tiny.en.bin": {
+        "name": "Whisper Tiny (English-only)", "params": "39M",
+        "description": "English-only variant of Whisper Tiny.",
+    },
+    "ggml-tiny.id.bin": {
+        "name": "Whisper Tiny (Indonesian)", "params": "39M",
+        "description": "Variant optimized for Indonesian. Baseline for fine-tuned comparisons.",
+    },
+    "ggml-base.bin": {
+        "name": "Whisper Base (multilingual)", "params": "74M",
+        "description": "Mid-size model — better accuracy than tiny, still fast.",
+    },
+    "ggml-small.bin": {
+        "name": "Whisper Small (multilingual)", "params": "244M",
+        "description": "Much better accuracy than base; needs more memory/time.",
+    },
+    "ggml-medium-q5_0.bin": {
+        "name": "Whisper Medium (quantized Q5_0)", "params": "769M",
+        "description": "Best accuracy that fits Jetson Nano 8GB RAM. WER ~22.7% on GigaSpeech2 ID dev.",
+    },
+    "ggml-whisper-tiny_gs2-id-refined_lr3e-05_bs64_5ep_bsa-d250-q5_0.bin": {
+        "name": "Fine-tuned Indonesian (quantized)", "params": "39M → 29MB (q5_0)",
+        "description": "Whisper Tiny fine-tuned on GigaSpeech2 Indonesian, quantized q5_0.",
+    },
+}
+
+
 # ─── HTTP Basic Auth ──────────────────────────────────────────────
 # Mirrors the sibling ocr-benchmark project exactly: single shared
 # password in `Settings.auth_password` (env var AUTH_PASSWORD), browser
@@ -297,6 +333,7 @@ def create_app() -> FastAPI:
         s = get_settings()
         return {
             "available": bins,
+            "descriptions": {b: MODEL_DESCRIPTIONS[b] for b in bins if b in MODEL_DESCRIPTIONS},
             "whisper_model": s.whisper_model,
             "vad_model": s.vad_model_path,
             "whisper_present": (MODELS_ROOT / s.whisper_model).exists(),
