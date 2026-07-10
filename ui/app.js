@@ -481,15 +481,19 @@ async function refreshSystem() {
                     .replace("{used}", (gpu.mem_used_mb ?? 0).toFixed(0))
                     .replace("{total}", (gpu.mem_total_mb ?? 0).toFixed(0))
                   : t("sysmon.gpuNone"));
+    const gpuTemp = gpu ? gpu.temp_c : null;
+    setSysmon("gputemp", gpuTemp, null, "°C", 100,
+              gpuTemp != null ? `${gpuTemp.toFixed(1)} °C` : t("sysmon.tempNone"));
     $("#sysmon-updated").textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : "–";
   } catch (e) { /* swallow */ }
 }
 function setSysmon(metric, value, count, unit, max, sub) {
-  const val = value == null ? "–" : (metric === "cputemp" ? value.toFixed(1) + unit : value.toFixed(0) + unit);
-  $(`#sysmon-${metric === "cputemp" ? "cputemp" : metric}-val`).textContent = val;
+  const isTemp = metric === "cputemp" || metric === "gputemp";
+  const val = value == null ? "–" : (isTemp ? value.toFixed(1) + unit : value.toFixed(0) + unit);
+  $(`#sysmon-${metric}-val`).textContent = val;
   const pct = value == null ? 0 : Math.min(100, (value / max) * 100);
-  $(`#sysmon-${metric === "cputemp" ? "cputemp" : metric}-bar`).style.width = pct + "%";
-  $(`#sysmon-${metric === "cputemp" ? "cputemp" : metric}-sub`).textContent =
+  $(`#sysmon-${metric}-bar`).style.width = pct + "%";
+  $(`#sysmon-${metric}-sub`).textContent =
     sub || (count ? `${count}${t("sysmon.cores")}` : "");
 }
 

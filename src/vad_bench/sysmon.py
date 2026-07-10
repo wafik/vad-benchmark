@@ -86,6 +86,47 @@ def _read_nvidia() -> list[GpuSample]:
     return samples
 
 
+def _read_tegrastats() -> GpuSample | None:
+    """One-shot tegrastats sample (runs tegrastats --interval 1000, reads 2 lines).
+
+    On Jetson Nano, nvidia-smi shows N/A for the integrated GPU — tegrastats
+    is the only reliable source for GPU utilisation and temperature.
+    """
+    import re
+    exe = shutil.which("tegrastats")
+    if not exe:
+        return None
+    try:
+        proc = subprocess.Popen(
+            [exe, "--interval", "1000"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        line = ""
+        for _ in range(2):
+            next_line = proc.stdout.readline()
+            if next_line:
+                line = next_line
+        proc.terminate()
+        proc.wait(timeout=2)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.debug("tegrastats read failed: %s", e)
+        return None
+    if not line:
+        return None
+    gpu_m = re.search(r"GR3D_FREQ (\d+)%", line)
+    gpu_temp_m = re.search(r"gpu@([\d.]+)C", line)
+    if not gpu_m:
+        return None
+    return GpuSample(
+        index=0,
+        name="Orin GPU (GR3D)",
+        util_percent=float(gpu_m.group(1)),
+        mem_used_mb=None,  # tegrastats doesn't expose GPU dedicated mem (unified memory)
+        mem_total_mb=None,
+        temp_c=float(gpu_temp_m.group(1)) if gpu_temp_m else None,
+    )
+
+
 def _read_cpu_temp() -> float | None:
     """Best-effort CPU temperature. Linux-only (returns None on Windows)."""
     try:
@@ -97,6 +138,14 @@ def _read_cpu_temp() -> float | None:
         if entries:
             return entries[0].current
     return None
+
+
+def _read_gpus() -> list[GpuSample]:
+    """Read GPU stats — prefer tegrastats on Jetson (nvidia-smi shows N/A for integrated GPU)."""
+    tegrastats = _read_tegrastats()
+    if tegrastats is not None:
+        return [tegrastats]
+    return _read_nvidia()
 
 
 def _sample() -> SystemSample:
@@ -111,7 +160,7 @@ def _sample() -> SystemSample:
         ram_total_mb=round(mem.total / 1024 / 1024, 1),
         disk_percent=float(disk.percent),
         cpu_temp_c=_read_cpu_temp(),
-        gpus=_read_nvidia(),
+        gpus=_read_gpus(),
         timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
