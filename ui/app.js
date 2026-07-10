@@ -325,6 +325,10 @@ let LAST_SUMMARY = null;             // latest /api/summary
 let RUNNING = false;
 let sseSource = null;
 
+// ─── Live sysmon peak/avg tracker ─────────────────────────────
+const SYSMON_HISTORY_MAX = 90;       // ~6 min at 4s interval
+let sysmonHistory = { cpu: [], ram: [], gpu: [], cpuTemp: [], gpuTemp: [] };
+
 const DEFAULT_CONFIGS = () => ([
   { name: "baseline_novad", overrides: { vad_enabled: false } },
   { name: "silero_vad",     overrides: { vad_enabled: true  } },
@@ -469,12 +473,31 @@ function pollSystem() {
 async function refreshSystem() {
   try {
     const s = await fetch("/api/system").then(r => r.json());
-    setSysmon("cpu",      s.cpu_percent, s.cpu_count,  "%", 100);
-    setSysmon("ram",      s.ram_percent, null,         "%", 100,
-              t("sysmon.ramFmt").replace("{used}", s.ram_used_mb.toFixed(0)).replace("{total}", s.ram_total_mb.toFixed(0)));
-    setSysmon("cputemp",  s.cpu_temp_c,  null,         "°C", 100,
-              s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)} °C` : t("sysmon.tempNone"));
+
+    // Track history for peak/avg.
+    sysmonHistory.cpu.push(s.cpu_percent);
+    sysmonHistory.ram.push(s.ram_percent);
+    if (s.cpu_temp_c != null) sysmonHistory.cpuTemp.push(s.cpu_temp_c);
     const gpu = (s.gpus && s.gpus[0]) || null;
+    if (gpu && gpu.util_percent != null) sysmonHistory.gpu.push(gpu.util_percent);
+    if (gpu && gpu.temp_c != null) sysmonHistory.gpuTemp.push(gpu.temp_c);
+    // Trim.
+    for (const k of Object.keys(sysmonHistory)) {
+      if (sysmonHistory[k].length > SYSMON_HISTORY_MAX) sysmonHistory[k].shift();
+    }
+
+    const cpuAvg = avg(sysmonHistory.cpu);
+    const cpuPeak = peak(sysmonHistory.cpu);
+    const ramAvg = avg(sysmonHistory.ram);
+    const ramPeak = peak(sysmonHistory.ram);
+
+    setSysmon("cpu", s.cpu_percent, s.cpu_count, "%", 100,
+              `avg ${cpuAvg.toFixed(0)}% · peak ${cpuPeak.toFixed(0)}%`);
+    setSysmon("ram", s.ram_percent, null, "%", 100,
+              `${s.ram_used_mb.toFixed(0)} / ${s.ram_total_mb.toFixed(0)} MB` +
+              ` · avg ${ramAvg.toFixed(0)}% · peak ${ramPeak.toFixed(0)}%`);
+    setSysmon("cputemp", s.cpu_temp_c, null, "°C", 100,
+              s.cpu_temp_c != null ? `${s.cpu_temp_c.toFixed(1)} °C` : t("sysmon.tempNone"));
     setSysmon("gpu", gpu ? gpu.util_percent : null, null, "%", 100,
               gpu ? t("sysmon.gpuFmt")
                     .replace("{name}", gpu.name)
@@ -487,6 +510,8 @@ async function refreshSystem() {
     $("#sysmon-updated").textContent = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : "–";
   } catch (e) { /* swallow */ }
 }
+function avg(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
+function peak(arr) { return arr.length ? Math.max(...arr) : 0; }
 function setSysmon(metric, value, count, unit, max, sub) {
   const isTemp = metric === "cputemp" || metric === "gputemp";
   const val = value == null ? "–" : (isTemp ? value.toFixed(1) + unit : value.toFixed(0) + unit);

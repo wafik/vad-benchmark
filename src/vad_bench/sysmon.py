@@ -171,7 +171,11 @@ def sample_dict() -> dict:
 
 
 class ResourceMonitor:
-    """Background sampler. ``latest`` is updated every ``interval_s`` seconds."""
+    """Background sampler. ``latest`` is updated every ``interval_s`` seconds.
+
+    ``latest`` includes running peak/avg for CPU, RAM, GPU so the live
+    sysmon widget can display them without waiting for the run to finish.
+    """
 
     def __init__(self, interval_s: float = 2.0):
         self.interval_s = interval_s
@@ -179,6 +183,14 @@ class ResourceMonitor:
         self._stop = threading.Event()
         self._samples: list[SystemSample] = []
         self.latest: dict | None = None
+        # Running peak/avg trackers (exposed in ``latest``).
+        self._cpu_sum: float = 0.0
+        self._cpu_peak: float = 0.0
+        self._ram_sum: float = 0.0
+        self._ram_peak: float = 0.0
+        self._gpu_sum: float = 0.0
+        self._gpu_peak: float = 0.0
+        self._gpu_count: int = 0
 
     def start(self) -> None:
         if self._thread is not None:
@@ -191,7 +203,25 @@ class ResourceMonitor:
             try:
                 s = _sample()
                 self._samples.append(s)
-                self.latest = asdict(s)
+                # Update running stats.
+                self._cpu_sum += s.cpu_percent
+                self._cpu_peak = max(self._cpu_peak, s.cpu_percent)
+                self._ram_sum += s.ram_percent
+                self._ram_peak = max(self._ram_peak, s.ram_percent)
+                for g in s.gpus:
+                    if g.util_percent is not None:
+                        self._gpu_sum += g.util_percent
+                        self._gpu_peak = max(self._gpu_peak, g.util_percent)
+                        self._gpu_count += 1
+                n = len(self._samples)
+                d = asdict(s)
+                d["cpu_avg"] = round(self._cpu_sum / n, 1)
+                d["cpu_peak"] = round(self._cpu_peak, 1)
+                d["ram_avg"] = round(self._ram_sum / n, 1)
+                d["ram_peak"] = round(self._ram_peak, 1)
+                d["gpu_avg"] = round(self._gpu_sum / self._gpu_count, 1) if self._gpu_count else None
+                d["gpu_peak"] = round(self._gpu_peak, 1) if self._gpu_count else None
+                self.latest = d
             except Exception:  # noqa: BLE001
                 log.exception("sysmon sample failed")
             self._stop.wait(self.interval_s)
