@@ -377,6 +377,7 @@ async function init() {
   try { LANG = localStorage.getItem("vad-bench.lang") || "id"; } catch {}
   applyLanguage();                     // first pass on static DOM
   await Promise.all([loadConfig(), loadModels(), refreshSystem(), loadRefSegments()]);
+  refreshModelBadge();  // needs both CFG and MODEL_DESCS loaded
   pollSystem();
   openSSE();
   renderConfigs(DEFAULT_CONFIGS());
@@ -434,8 +435,16 @@ function updateStepper(stage) {
 
 async function loadConfig() {
   CFG = await fetch("/api/config").then(r => r.json());
-  $("#model-badge-text").textContent = CFG.whisper_model;
   refreshBadges();
+}
+
+function refreshModelBadge() {
+  if (!CFG) return;
+  const raw = CFG.whisper_model || "–";
+  const d = MODEL_DESCS[raw];
+  const label = d ? `${d.name} (${d.params})` : raw.replace(/^ggml-/, "").replace(/\.bin$/, "");
+  $("#model-badge-text").textContent = label;
+  $("#model-badge").title = d ? d.description : raw;
 }
 
 async function loadModels() {
@@ -737,21 +746,28 @@ function renderResults(sum) {
     ? vadConfigs.reduce((a, c) => a + (c.speech_seconds || 0), 0) / vadConfigs.length / sum.audio_duration_s
     : null;
 
+  const bestWerVal = minOf(sum.configs, "wer");
+  const bestCerVal = minOf(sum.configs, "cer");
+  const fastestRtfVal = minOf(sum.configs, "rtf");
+  const werCls = bestWerVal != null ? (bestWerVal <= 0.15 ? "tile-good" : bestWerVal <= 0.30 ? "tile-warn" : "tile-bad") : "";
+  const cerCls = bestCerVal != null ? (bestCerVal <= 0.10 ? "tile-good" : bestCerVal <= 0.25 ? "tile-warn" : "tile-bad") : "";
+  const rtfCls = fastestRtfVal != null ? (fastestRtfVal < 1.0 ? "tile-good" : fastestRtfVal < 2.0 ? "tile-warn" : "tile-bad") : "";
+
   $("#results-summary").innerHTML = `
-    <div class="summary-tile">
+    <div class="summary-tile ${werCls}">
       <div class="tile-label">${t("tile.bestWer")}<button type="button" class="tip" data-tip-key="wer" aria-label="${escapeAttr(t("aria.wer"))}">?</button></div>
-      <div class="tile-value">${sum.best_wer_config || "–"}</div>
-      <div class="tile-sub">${(minOf(sum.configs, "wer") ?? 0).toFixed(3)}</div>
+      <div class="tile-value">${bestWerVal != null ? bestWerVal.toFixed(3) : "–"}</div>
+      <div class="tile-sub">${sum.best_wer_config || "–"}</div>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ${cerCls}">
       <div class="tile-label">${t("tile.bestCer")}<button type="button" class="tip" data-tip-key="cer" aria-label="${escapeAttr(t("aria.cer"))}">?</button></div>
-      <div class="tile-value">${sum.best_cer_config || "–"}</div>
-      <div class="tile-sub">${(minOf(sum.configs, "cer") ?? 0).toFixed(3)}</div>
+      <div class="tile-value">${bestCerVal != null ? bestCerVal.toFixed(3) : "–"}</div>
+      <div class="tile-sub">${sum.best_cer_config || "–"}</div>
     </div>
-    <div class="summary-tile">
+    <div class="summary-tile ${rtfCls}">
       <div class="tile-label">${t("tile.fastestRtf")}<button type="button" class="tip" data-tip-key="rtf" aria-label="${escapeAttr(t("aria.rtf"))}">?</button></div>
-      <div class="tile-value">${sum.fastest_rtf_config || "–"}</div>
-      <div class="tile-sub">${(minOf(sum.configs, "rtf") ?? 0).toFixed(3)}</div>
+      <div class="tile-value">${fastestRtfVal != null ? fastestRtfVal.toFixed(3) : "–"}</div>
+      <div class="tile-sub">${sum.fastest_rtf_config || "–"}</div>
     </div>
     <div class="summary-tile">
       <div class="tile-label">${t("tile.totalRuntime")}<button type="button" class="tip" data-tip-key="totalRuntime" aria-label="${escapeAttr(t("aria.totalRuntime"))}">?</button></div>
@@ -868,10 +884,14 @@ async function selectConfig(config) {
 
 function renderDetail(d) {
   const root = $("#config-detail");
+  const transcript = d.transcript_raw || "";
   root.innerHTML = `
     <div class="diff-block">
-      <h3>${t("diff.transcriptFmt").replace("{name}", escapeHtml(d.config)).replace("{vad}", d.vad_enabled ? t("field.vadOn") : t("field.vadOff"))}</h3>
-      <div class="diff-stream">${escapeHtml(d.transcript_raw || t("diff.emptyTranscript"))}</div>
+      <div class="diff-block-head">
+        <h3>${t("diff.transcriptFmt").replace("{name}", escapeHtml(d.config)).replace("{vad}", d.vad_enabled ? t("field.vadOn") : t("field.vadOff"))}</h3>
+        <button class="btn btn-ghost btn-copy" type="button" title="Copy transcript">${LANG === "id" ? "Salin" : "Copy"}</button>
+      </div>
+      <div class="diff-stream">${escapeHtml(transcript || t("diff.emptyTranscript"))}</div>
     </div>
     <div class="diff-block">
       <h3>${t("diff.title")}</h3>
@@ -884,6 +904,14 @@ function renderDetail(d) {
       </div>
     </div>
   `;
+  root.querySelectorAll(".btn-copy").forEach(btn => {
+    btn.addEventListener("click", () => {
+      navigator.clipboard.writeText(transcript).then(() => {
+        btn.textContent = LANG === "id" ? "✓ Tersalin" : "✓ Copied";
+        setTimeout(() => { btn.textContent = LANG === "id" ? "Salin" : "Copy"; }, 1500);
+      });
+    });
+  });
 }
 
 function renderAlignment(parts) {
