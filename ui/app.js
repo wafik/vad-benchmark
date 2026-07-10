@@ -94,6 +94,12 @@ const I18N = {
     "history.detail.colRuntime": "Runtime",
     "history.detail.colSegments": "Segments",
     "history.detail.segmentsNote": "Segment audio isn't kept from past runs — only the most recent run's chunks are playable, under \"VAD breakdown\".",
+    "history.detail.transcript":  "Transcript",
+    "history.detail.segTable":    "Segments",
+    "history.detail.segIdx":      "#",
+    "history.detail.segRange":    "Time",
+    "history.detail.segDur":      "Dur.",
+    "history.detail.segText":     "Text",
     "tab.comparison":       "Comparison",
     "tab.vadBreakdown":     "VAD breakdown",
     "vad.title":            "VAD breakdown — {config}",
@@ -245,6 +251,12 @@ const I18N = {
     "history.detail.colRuntime": "Runtime",
     "history.detail.colSegments": "Segmen",
     "history.detail.segmentsNote": "Audio potongan tidak disimpan dari run lampau — hanya potongan dari run terakhir yang bisa diputar, di tab \"Rincian VAD\".",
+    "history.detail.transcript":  "Transkrip",
+    "history.detail.segTable":    "Segmen",
+    "history.detail.segIdx":      "#",
+    "history.detail.segRange":    "Waktu",
+    "history.detail.segDur":      "Durasi",
+    "history.detail.segText":     "Teks",
     "tab.comparison":       "Perbandingan",
     "tab.vadBreakdown":     "Rincian VAD",
     "vad.title":            "Rincian VAD — {config}",
@@ -1197,6 +1209,43 @@ function renderHistoryDetail(run) {
       <tbody>${rows}</tbody>
     </table>
     <div class="muted history-detail-note">${t("history.detail.segmentsNote")}</div>
+
+    ${(run.configs || []).map(c => {
+      const transcript = c.transcript_raw || (c.segments || []).map(s => s.text).join(" ");
+      const segs = c.segments || [];
+      const segRows = segs.map((s, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td><span class="muted">${fmtMmSs(s.start)}–${fmtMmSs(s.end)}</span></td>
+          <td class="num">${(s.end - s.start).toFixed(1)}s</td>
+          <td>${escapeHtml(s.text || "")}</td>
+        </tr>
+      `).join("");
+      return `
+        <div class="history-config-block">
+          <h4>${escapeHtml(c.config)} <span class="config-vad-toggle ${c.vad_enabled ? "is-on" : ""}" style="font-size:11px"><span class="toggle-dot"></span>${c.vad_enabled ? "on" : "off"}</span></h4>
+          <div class="diff-block">
+            <div class="diff-stream">${escapeHtml(transcript || "(kosong)")}</div>
+          </div>
+          ${segs.length ? `
+            <details class="history-seg-details">
+              <summary>${t("history.detail.segTable")} (${segs.length})</summary>
+              <table class="vad-regions-table" style="margin-top:8px">
+                <thead>
+                  <tr>
+                    <th>${t("history.detail.segIdx")}</th>
+                    <th>${t("history.detail.segRange")}</th>
+                    <th class="num">${t("history.detail.segDur")}</th>
+                    <th>${t("history.detail.segText")}</th>
+                  </tr>
+                </thead>
+                <tbody>${segRows}</tbody>
+              </table>
+            </details>
+          ` : ""}
+        </div>
+      `;
+    }).join("")}
   `;
   root.hidden = false;
 }

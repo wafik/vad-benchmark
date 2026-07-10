@@ -365,6 +365,7 @@ def _record_from_metrics(rm: RunMetrics, s: Settings) -> dict:
     return {
         "config": rm.config,
         "vad_enabled": rm.vad_enabled,
+        "transcript_raw": rm.transcript_raw,
         "wer": rm.wer,
         "cer": rm.cer,
         "rtf": rm.rtf,
