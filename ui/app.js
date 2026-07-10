@@ -1210,7 +1210,7 @@ function renderHistoryDetail(run) {
     </table>
     <div class="muted history-detail-note">${t("history.detail.segmentsNote")}</div>
 
-    ${(run.configs || []).map(c => {
+    ${(run.configs || []).map((c, ci) => {
       const transcript = c.transcript_raw || (c.segments || []).map(s => s.text).join(" ");
       const segs = c.segments || [];
       const segRows = segs.map((s, i) => `
@@ -1221,16 +1221,22 @@ function renderHistoryDetail(run) {
           <td>${escapeHtml(s.text || "")}</td>
         </tr>
       `).join("");
+      const uid = `hcfg-${ci}`;
       return `
         <div class="history-config-block">
           <h4>${escapeHtml(c.config)} <span class="config-vad-toggle ${c.vad_enabled ? "is-on" : ""}" style="font-size:11px"><span class="toggle-dot"></span>${c.vad_enabled ? "on" : "off"}</span></h4>
-          <div class="diff-block">
-            <div class="diff-stream">${escapeHtml(transcript || "(kosong)")}</div>
+          <div class="vad-subtabs">
+            <button type="button" class="vad-subtab is-active" data-subtab="${uid}-transcript" onclick="this.closest('.history-config-block').querySelectorAll('.vad-subtab').forEach(b=>b.classList.toggle('is-active',b===this));this.closest('.history-config-block').querySelectorAll('.vad-subpane').forEach(p=>p.hidden=(p.dataset.subpane!==this.dataset.subtab))">${t("history.detail.transcript")}</button>
+            <button type="button" class="vad-subtab" data-subtab="${uid}-segments" onclick="this.closest('.history-config-block').querySelectorAll('.vad-subtab').forEach(b=>b.classList.toggle('is-active',b===this));this.closest('.history-config-block').querySelectorAll('.vad-subpane').forEach(p=>p.hidden=(p.dataset.subpane!==this.dataset.subtab))">${t("history.detail.segTable")} (${segs.length})</button>
           </div>
-          ${segs.length ? `
-            <details class="history-seg-details">
-              <summary>${t("history.detail.segTable")} (${segs.length})</summary>
-              <table class="vad-regions-table" style="margin-top:8px">
+          <div class="vad-subpane" data-subpane="${uid}-transcript">
+            <div class="diff-block">
+              <div class="diff-stream">${escapeHtml(transcript || "(kosong)")}</div>
+            </div>
+          </div>
+          <div class="vad-subpane" data-subpane="${uid}-segments" hidden>
+            ${segs.length ? `
+              <table class="vad-regions-table">
                 <thead>
                   <tr>
                     <th>${t("history.detail.segIdx")}</th>
@@ -1241,8 +1247,8 @@ function renderHistoryDetail(run) {
                 </thead>
                 <tbody>${segRows}</tbody>
               </table>
-            </details>
-          ` : ""}
+            ` : `<div class="muted" style="padding:10px 0;font-size:12px">${t("vad.noSegments")}</div>`}
+          </div>
         </div>
       `;
     }).join("")}
