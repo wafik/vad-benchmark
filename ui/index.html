@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="id">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -10,13 +10,14 @@
 <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+<a class="skip-link" href="#main-content" data-i18n="nav.skip">Skip to main content</a>
 
 <!-- ─── Topbar ─────────────────────────────────────────────── -->
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
       <div class="logo">
-        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true" focusable="false">
           <rect x="2" y="2" width="24" height="24" rx="6" fill="var(--accent)" opacity="0.12"/>
           <rect x="6"  y="13" width="2" height="2"  rx="1" fill="var(--accent)"/>
           <rect x="9"  y="11" width="2" height="6"  rx="1" fill="var(--accent)"/>
@@ -27,8 +28,8 @@
         </svg>
       </div>
       <div>
-        <div class="title" data-i18n="topbar.title">VAD Benchmark</div>
-        <div class="sub" data-i18n="topbar.sub">ai4db · Indonesian · Silero VAD vs none</div>
+        <h1 class="title" data-i18n="topbar.title">VAD Benchmark</h1>
+        <div class="sub" data-i18n="topbar.sub">ai4db · Indonesian · declared VAD modes</div>
       </div>
     </div>
     <div class="topbar-right">
@@ -42,14 +43,14 @@
       </div>
       <span id="last-run" class="last-run" title="When the last benchmark finished">–</span>
       <div class="lang-toggle" role="group" aria-label="Language">
-        <button type="button" data-lang="en" class="lang-btn">EN</button>
-        <button type="button" data-lang="id" class="lang-btn">ID</button>
+        <button type="button" data-lang="en" class="lang-btn" aria-pressed="false">EN</button>
+        <button type="button" data-lang="id" class="lang-btn" aria-pressed="true">ID</button>
       </div>
     </div>
   </div>
 </header>
 
-<main class="container">
+<main class="container" id="main-content" tabindex="-1">
 
   <!-- ─── Flow stepper (3 steps) ─────────────────────── -->
   <ol class="flow-stepper" id="flow-stepper" aria-label="Benchmark flow">
@@ -94,7 +95,18 @@
 
     <div id="configs-list" class="configs-list"></div>
 
-    <div class="run-status muted" id="run-status" data-i18n="run.idle">Idle.</div>
+    <div class="run-pair-selectors" aria-label="Comparison pair">
+      <label class="field">
+        <span class="field-label" data-i18n="run.control">Control</span>
+        <select id="control-name" name="control_name" autocomplete="off"></select>
+      </label>
+      <label class="field">
+        <span class="field-label" data-i18n="run.candidate">Candidate</span>
+        <select id="candidate-name" name="candidate_name" autocomplete="off"></select>
+      </label>
+    </div>
+
+    <div class="run-status muted" id="run-status" role="status" aria-live="polite" aria-atomic="true" data-i18n="run.idle">Idle.</div>
   </section>
 
   <!-- ─── Results ──────────────────────────────────────────── -->
@@ -104,19 +116,21 @@
       <span class="muted" id="results-meta">–</span>
     </header>
 
-    <div class="results-tabs">
-      <button type="button" class="results-tab is-active" data-tab="compare" data-i18n="tab.comparison">Comparison</button>
-      <button type="button" class="results-tab" data-tab="vad" data-i18n="tab.vadBreakdown">VAD breakdown</button>
+    <div class="results-tabs" role="tablist" aria-label="Result views">
+      <button type="button" class="results-tab is-active" id="results-tab-compare" role="tab" aria-selected="true" aria-controls="results-pane-compare" data-tab="compare" data-i18n="tab.comparison">Comparison</button>
+      <button type="button" class="results-tab" id="results-tab-vad" role="tab" aria-selected="false" aria-controls="results-pane-vad" data-tab="vad" data-i18n="tab.vadBreakdown">VAD breakdown</button>
     </div>
 
     <div class="results-verdict" id="results-verdict" hidden>
       <span class="verdict-label" data-i18n="verdict.label">Verdict</span>
       <span class="verdict-text" id="verdict-text"></span>
     </div>
+    <div class="results-identity" id="results-identity"></div>
 
-    <div id="results-pane-compare">
+    <div id="results-pane-compare" role="tabpanel" aria-labelledby="results-tab-compare">
       <div class="results-summary" id="results-summary"></div>
 
+    <div class="table-scroll">
       <table class="results-table" id="results-table">
       <thead>
         <tr>
@@ -125,7 +139,9 @@
           <th class="num"><span data-i18n="table.wer">WER</span> <span class="th-arrow">↓</span><button type="button" class="tip" data-tip-key="wer" aria-label="What is WER?">?</button></th>
           <th class="num"><span data-i18n="table.cer">CER</span> <span class="th-arrow">↓</span><button type="button" class="tip" data-tip-key="cer" aria-label="What is CER?">?</button></th>
           <th class="num"><span data-i18n="table.rtf">RTF</span><button type="button" class="tip" data-tip-key="rtf" aria-label="What is RTF?">?</button></th>
-          <th class="num"><span data-i18n="table.runtime">Runtime</span><button type="button" class="tip" data-tip-key="runtime" aria-label="What is runtime?">?</button></th>
+          <th class="num"><span data-i18n="table.runtime">Total</span><button type="button" class="tip" data-tip-key="runtime" aria-label="What is runtime?">?</button></th>
+          <th data-i18n="table.components">Components</th>
+          <th data-i18n="table.metric">Metric</th>
           <th class="num"><span data-i18n="table.silence">Silence removed</span><button type="button" class="tip" data-tip-key="silence" aria-label="What is silence removed?">?</button></th>
           <th class="num"><span data-i18n="table.segments">Segments</span><button type="button" class="tip" data-tip-key="segments" aria-label="What are segments?">?</button></th>
           <th class="num"><span data-i18n="table.avgSeg">Avg seg</span></th>
@@ -133,14 +149,15 @@
         </tr>
       </thead>
       <tbody></tbody>
-    </table>
+      </table>
+    </div>
 
     <div class="best-line muted" id="best-line"></div>
 
     <div class="config-detail" id="config-detail"></div>
     </div>
 
-    <div id="results-pane-vad" hidden>
+    <div id="results-pane-vad" role="tabpanel" aria-labelledby="results-tab-vad" hidden>
       <div id="vad-breakdown" class="vad-breakdown"></div>
     </div>
   </section>
@@ -151,7 +168,8 @@
       <h2 data-i18n="history.title">Run history</h2>
       <span class="muted" data-i18n="history.sub">Newest first · up to 50 runs</span>
     </header>
-    <table class="history-table">
+    <div class="table-scroll">
+      <table class="history-table">
       <thead>
         <tr>
           <th data-i18n="history.colWhen">When</th>
@@ -163,7 +181,13 @@
         </tr>
       </thead>
       <tbody id="history-body"></tbody>
-    </table>
+      </table>
+    </div>
+    <nav id="history-pagination" class="history-pagination" aria-label="History pages" hidden>
+      <button type="button" class="btn btn-ghost" id="history-prev">Previous</button>
+      <span class="muted" id="history-page-status" aria-live="polite"></span>
+      <button type="button" class="btn btn-ghost" id="history-next">Next</button>
+    </nav>
     <div class="history-detail" id="history-detail" hidden></div>
   </section>
 
@@ -190,13 +214,21 @@
         <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-ram-bar"></div></div>
         <div class="sysmon-sub muted" id="sysmon-ram-sub"></div>
       </div>
+      <div class="sysmon-card" data-metric="swap">
+        <div class="sysmon-head">
+          <span class="sysmon-label">Swap</span>
+          <span class="sysmon-value" id="sysmon-swap-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-swap-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-swap-sub"></div>
+      </div>
       <div class="sysmon-card" data-metric="cpu-temp">
         <div class="sysmon-head">
           <span class="sysmon-label">CPU temp</span>
-          <span class="sysmon-value" id="sysmon-cputemp-val">–</span>
+          <span class="sysmon-value" id="sysmon-cpu-temp-val">–</span>
         </div>
-        <div class="sysmon-bar-track"><div class="sysmon-bar sysmon-bar-temp" id="sysmon-cputemp-bar"></div></div>
-        <div class="sysmon-sub muted" id="sysmon-cputemp-sub"></div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar sysmon-bar-temp" id="sysmon-cpu-temp-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-cpu-temp-sub"></div>
       </div>
       <div class="sysmon-card" data-metric="gpu">
         <div class="sysmon-head">
@@ -206,12 +238,36 @@
         <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-gpu-bar"></div></div>
         <div class="sysmon-sub muted" id="sysmon-gpu-sub"></div>
       </div>
+      <div class="sysmon-card" data-metric="gpu-memory">
+        <div class="sysmon-head">
+          <span class="sysmon-label">GPU memory</span>
+          <span class="sysmon-value" id="sysmon-gpu-memory-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-gpu-memory-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-gpu-memory-sub"></div>
+      </div>
+      <div class="sysmon-card" data-metric="gpu-temp">
+        <div class="sysmon-head">
+          <span class="sysmon-label">GPU temp</span>
+          <span class="sysmon-value" id="sysmon-gpu-temp-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar sysmon-bar-temp" id="sysmon-gpu-temp-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-gpu-temp-sub"></div>
+      </div>
+      <div class="sysmon-card" data-metric="disk">
+        <div class="sysmon-head">
+          <span class="sysmon-label">Disk</span>
+          <span class="sysmon-value" id="sysmon-disk-val">–</span>
+        </div>
+        <div class="sysmon-bar-track"><div class="sysmon-bar" id="sysmon-disk-bar"></div></div>
+        <div class="sysmon-sub muted" id="sysmon-disk-sub"></div>
+      </div>
     </div>
   </section>
 
   <footer class="footer muted">
-    <p data-i18n="footer.line1">VAD benchmark for <code>ai4db</code>'s Whisper + Silero VAD pipeline on Indonesian audio. Compares <strong>vad enabled vs disabled</strong> via <code>whisper-cli</code>'s built-in <code>--vad --vad-model</code> flags.</p>
-    <p data-i18n="footer.line2">Caveats: ground truth is a YouTube auto-transcript — WER is <em>relative</em> between configs, not absolute accuracy. <code>tiny.id</code> is a small model — the <strong>VAD on/off delta</strong> is the real signal, not the raw number.</p>
+    <p data-i18n="footer.line1">VAD benchmark for <code>ai4db</code>'s Whisper pipeline on Indonesian audio. Compares declared <strong>off</strong>, <strong>builtin</strong>, <strong>presegmented</strong>, and <strong>rms_energy</strong> modes.</p>
+    <p data-i18n="footer.line2">Caveat: this is an exploratory one-clip dataset with <strong>silver reference captions</strong>. WER/CER are relative comparisons, not absolute accuracy or VAD-boundary quality.</p>
   </footer>
 </main>
 

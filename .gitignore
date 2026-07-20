@@ -25,3 +25,6 @@ models/*.bin
 # OS
 .DS_Store
 Thumbs.db
+
+# claude-flow runtime state
+.claude-flow/

@@ -21,7 +21,7 @@ podcast.mp3 --ffmpeg--> podcast_16k.wav --whisper-cli(+VAD)--> stdout segments
 |---|---|---|---|
 | Decode audio | `ensure_wav()` | `audio.py` | `data/podcast_16k.wav` — 16 kHz mono PCM16, cached (skipped if newer than the mp3) |
 | Measure duration | `wav_duration()` | `audio.py` | seconds, via the WAV header only (`wave.getnframes()/getframerate()`, no decode) |
-| Load reference | `load_reference()` | `reference.py` | normalized ground-truth string + list of timestamped `Segment`s |
+| Load reference | `load_reference()` | `reference.py` | normalized silver-reference string + list of timestamped caption `Segment`s |
 | Snapshot reference | `write_reference_artifacts()` | `reference.py` | `reports/reference/{reference.txt, segments.json}` |
 
 `ensure_wav()` shells out to ffmpeg exactly once:
@@ -49,11 +49,21 @@ For each `{name, overrides}` in the requested config list (default: `baseline_no
    `.env`/env-var defaults (`config.py`).
 2. **Write status** — `.run_status.json` updated so `/api/progress` (polled)
    and `/api/progress/stream` (SSE) can show "current: {name}" live.
-3. **Transcribe** — `engine.transcribe(wav, config=name, settings=s, ...)`.
-4. **Score** — `_score()` builds a `RunMetrics`.
-5. **Slice chunks** — if VAD was on and produced segments, `slice_wav_segments()`
+3. **Run the declared mode** — `off` transcribes the whole WAV without VAD;
+   `builtin` calls Whisper with `--vad --vad-model` (Silero, in-process);
+   `presegmented` first runs the standalone Silero segmenter binary and
+   transcribes its chunks without Whisper VAD; `rms_energy` computes speech
+   regions in pure Python (`rms_vad.compute_rms_segments`, no Silero model,
+   no external binary) and transcribes those chunks the same way
+   `presegmented` does. There is no mode fallback.
+4. **Time and transcribe** — `total_s` starts before the mode's first operation
+   and stops when Whisper output is available. `segment_prep_s`, `staging_s`,
+   and `transcription_s` remain diagnostic components.
+5. **Score** — `_score()` builds a `RunMetrics`, including `metric_status` and
+   `metric_error` if optional reference-caption region scoring fails.
+6. **Slice chunks** — if VAD was on and produced segments, `slice_wav_segments()`
    cuts one WAV per detected region.
-6. **Persist per-config** — `reports/per_config/<slug>.json` = `rm.to_dict()`.
+7. **Persist per-config** — `reports/per_config/<slug>.json` = `rm.to_dict()`.
 
 A global `_RUN_GEN` counter makes a fresh `POST /api/run` supersede an
 in-flight one — the old loop notices `gen != _RUN_GEN` and bails via
@@ -139,9 +149,9 @@ segments, and the raw cmd/stdout/stderr for debugging.
 |---|---|---|
 | WER | `wer(ref, hyp)` | `jiwer.wer` on NFKC-lowercased, whitespace-collapsed text |
 | CER | `cer(ref, hyp)` | `jiwer.cer`, same normalization |
-| RTF | inline | `runtime_s / audio_duration_s` — < 1.0 = faster than real-time |
+| RTF | `RunMetrics.__post_init__` | `total_s / audio_duration_s` — < 1.0 = faster than real-time |
 | Word alignment | `word_alignment(ref, hyp)` | per-word `equal/substitute/insert/delete` tags from `jiwer.process_words`, for the UI's colored diff |
-| Per-region WER | `per_region_wer()` | greedy IoU match of each reference segment against the closest hyp segment (used by the VAD-breakdown tab, not the top-level score) |
+| Reference-caption region WER/CER | `per_region_wer()` | server-side greedy IoU match of each caption window against the closest hyp segment; it is not VAD-boundary quality |
 
 All of this becomes one `RunMetrics` dataclass (`metrics.py:150`) per config,
 serialized via `.to_dict()`.
@@ -172,12 +182,13 @@ Retention is intentionally asymmetric:
 
 | Path | Written by | Contents |
 |---|---|---|
-| `reports/summary.json` | `runner.run()` | `aggregate()` output — per-config metrics, best-WER/CER/RTF configs, verdict, resource summary |
+| `reports/summary.json` | `runner.run()` | aggregate, run ID, manifest path, silver reference quality, per-config metrics, verdict, normalized resources |
 | `reports/summary.csv` | `_write_summary_csv()` | flat table, one row per config |
 | `reports/per_config/<slug>.json` | `runner.run()` | full `RunMetrics.to_dict()` incl. transcript + alignment |
 | `reports/chunks/<slug>/NNNN.wav` | `slice_wav_segments()` | per-region audio (latest run only) |
 | `reports/history/<run_id>.json` | `_save_to_history()` | full snapshot for that run |
-| `reports/history/index.json` | `_save_to_history()` | rolling 50-entry list for the History tab |
+| `reports/history/<run_id>.manifest.json` | `manifest.write_manifest()` | immutable effective settings, commands, input/model hashes, revision, host/tools, timing scope, and reference quality |
+| `reports/history/index.json` | `_save_to_history()` | full run index, paginated by the History API |
 | `reports/.run_status.json` | `_write_status()` | live progress sidecar (atomic write w/ Windows AV-scanner retry) |
 
 ---
@@ -192,11 +203,10 @@ Retention is intentionally asymmetric:
 | `GET /api/progress`, `/api/progress/stream` | `reports/.run_status.json` (SSE = 1s diff poll) |
 | `GET /api/history`, `/api/history/{id}` | `reports/history/index.json`, `reports/history/<id>.json` |
 
-`ui/app.js` renders the comparison table, the transcript diff (from
-`alignment`), the VAD-breakdown timeline (from `segments` +
-`/api/reference/segments`), and the chunk player (`<audio src="/api/chunks/...">`)
-straight from these JSON payloads — no build step, no client-side state
-beyond what's fetched per render.
+`ui/app.js` renders declared mode, total/component timings, metric status/error,
+run ID/manifest path, silver exploratory-reference label, and normalized
+resources directly from these JSON payloads. Reference-caption WER/CER are
+server-computed; the browser does not reconstruct proxy metrics.
 
 ---
 
@@ -206,5 +216,5 @@ Every function named above already has one of:
 - a module `if __name__ == "__main__":` self-check (`metrics.py`, `engine.py`, `runner.py`), or
 - a `tests/test_*.py` covering it (`test_metrics.py`, `test_audio.py`, `test_reference.py` if present).
 
-Run `uv run pytest tests/ -q --ignore=tests/test_auth.py` to exercise all of them
-(`test_auth.py` has a pre-existing, unrelated import-path issue — see repo notes).
+Run `make test` for the canonical clean-environment check. It syncs the `dev`
+extra and runs the complete suite without excluding tests.

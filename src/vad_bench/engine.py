@@ -31,6 +31,7 @@ import time
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .config import Settings
 
@@ -55,9 +56,11 @@ _SEGMENT_RE = re.compile(
 @dataclass
 class EngineResult:
     config: str
+    vad_mode: str
     vad_enabled: bool
     transcript: str
-    runtime_s: float
+    staging_s: float
+    transcription_s: float
     # Set when the whisper-cli stderr contained a VAD reduction line.
     # None for the no-VAD run.
     silence_removed: float | None
@@ -159,6 +162,7 @@ def compute_vad_segments(
     s: Settings,
     cmd: str = "whisper-vad-speech-segments",
     timeout_s: int = 120,
+    timings: dict[str, float] | None = None,
 ) -> list[tuple[float, float]]:
     """Run the standalone VAD binary and return ``[(start_s, end_s), ...]``.
 
@@ -172,12 +176,19 @@ def compute_vad_segments(
         r"Speech segment \d+: start = ([\d.]+), end = ([\d.]+)"
     )
 
-    # Build the command — mirror the ssh-or-direct pattern of _resolve_cmd
-    # but simpler: the VAD binary doesn't need model/audio path rewriting
-    # for the SSH case (caller handles that via the cmd string).
+    staging_started = time.perf_counter()
+    remote = _maybe_sync_remote(
+        cmd,
+        local_paths={"wav": wav_path, "vad": vad_model_path},
+    )
+    if timings is not None:
+        timings["staging_s"] = time.perf_counter() - staging_started if remote else 0.0
+    if _is_ssh_command(cmd) and remote is None:
+        raise RuntimeError("SSH VAD command has no remote host")
+
     flags = [
-        "-f", wav_path.as_posix(),
-        "-vm", vad_model_path.as_posix(),
+        "-f", remote["wav"] if remote else wav_path.as_posix(),
+        "-vm", remote["vad"] if remote else vad_model_path.as_posix(),
         "-vt", str(s.vad_threshold),
         "-vspd", str(s.vad_min_speech_ms),
         "-vsd", str(s.vad_min_silence_ms),
@@ -187,21 +198,20 @@ def compute_vad_segments(
     if s.vad_max_speech_s > 0:
         flags += ["-vmsd", str(s.vad_max_speech_s)]
 
-    looks_like_shell = (
-        " " in cmd
-        or any(op in cmd for op in ("|", ">", "<", "&", ";", "$"))
-    )
-    if looks_like_shell:
+    if _looks_like_shell_command(cmd):
         full_cmd = f"{cmd} {' '.join(shlex.quote(f) for f in flags)}"
         use_shell = True
     else:
         full_cmd = [cmd] + flags
         use_shell = False
 
+    segmenter_started = time.perf_counter()
     proc = subprocess.run(
         full_cmd, capture_output=True, text=True,
         timeout=timeout_s, shell=use_shell,
     )
+    if timings is not None:
+        timings["segment_prep_s"] = time.perf_counter() - segmenter_started
     if proc.returncode != 0:
         raise RuntimeError(
             f"VAD binary failed (rc={proc.returncode}): "
@@ -310,12 +320,7 @@ def _resolve_cmd(cmd_str: str, model_path: Path, vad_model_path: Path | None,
 
     # Heuristic: if the value has no spaces and no shell operators, treat it as
     # a bare binary / absolute path. Otherwise it's a shell command.
-    looks_like_shell = (
-        " " in cmd_str
-        or any(op in cmd_str for op in ("|", ">", "<", "&", ";", "$"))
-    )
-
-    if not looks_like_shell:
+    if not _looks_like_shell_command(cmd_str):
         tokens = [cmd_str] + flags
         return tokens, False
 
@@ -352,7 +357,7 @@ def _whisper_flags(model_path: Path, vad_model_path: Path | None,
         # summary line from there. The transcript still lands on stdout.
         "--print-progress",
     ]
-    if s.vad_enabled and vad_model_path is not None and not skip_vad:
+    if s.vad_mode == "builtin" and vad_model_path is not None and not skip_vad:
         flags += ["--vad", "--vad-model", _pp(vad_model_path)]
         if s.vad_threshold != 0.5:
             flags += ["--vad-threshold", str(s.vad_threshold)]
@@ -376,6 +381,7 @@ def transcribe(
     audio_duration_s: float | None = None,
     timeout_s: int = 600,
     vad_segments: list[tuple[float, float]] | None = None,
+    on_output_ready: Callable[[], None] | None = None,
 ) -> EngineResult:
     """Run whisper-cli on ``wav_path`` and return the parsed result.
 
@@ -398,13 +404,15 @@ def transcribe(
             f"existing file under models/."
         )
     vad_model_path: Path | None = None
-    if settings.vad_enabled:
+    if settings.vad_mode in ("builtin", "presegmented"):
         vad_model_path = models_root / settings.vad_model_path
         if not vad_model_path.exists():
             raise FileNotFoundError(
                 f"Silero VAD model not found at {vad_model_path}. "
                 f"Download: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-silero-v6.2.0.bin"
             )
+    # rms_energy needs no Silero model — it never touches whisper.cpp's
+    # --vad flags at all, same as presegmented's skip_vad path below.
 
     # ── VAD pre-computation path ───────────────────────────────────────
     # When pre-computed VAD segments are provided, write each region as a
@@ -418,8 +426,11 @@ def transcribe(
     _remote_scratch_region_files: list[str] = []
     skip_vad = False
     is_remote = _is_ssh_command(settings.whisper_cli_cmd)
+    staging_s = 0.0
 
-    if vad_segments and settings.vad_enabled:
+    if settings.vad_mode in ("presegmented", "rms_energy"):
+        if not vad_segments:
+            raise RuntimeError(f"{settings.vad_mode} mode produced no speech segments")
         skip_vad = True
         _region_dir = Path(tempfile.mkdtemp(prefix="vad_regions_"))
         region_files = _slice_vad_regions(wav_path, vad_segments, _region_dir)
@@ -442,17 +453,25 @@ def transcribe(
                 flags_no_f.append(tok)
 
         if is_remote:
-            # Sync region files to remote scratch dir before running.
-            import hashlib
-            for rp in region_files:
-                h = hashlib.sha1(str(rp.resolve()).encode()).hexdigest()[:10]
-                remote_path = f"{_REMOTE_SCRATCH}/{h}_{rp.name}"
-                subprocess.run(
-                    ["scp", "-q", str(rp), f"{_extract_ssh_host(settings.whisper_cli_cmd)}:{remote_path}"],
-                    check=True, capture_output=True, timeout=60,
-                )
-                _remote_scratch_region_files.append(remote_path)
+            staging_started = time.perf_counter()
+            remote_paths = _maybe_sync_remote(
+                settings.whisper_cli_cmd,
+                local_paths={
+                    "model": model_path,
+                    **{f"region_{i}": path for i, path in enumerate(region_files)},
+                },
+            )
+            if remote_paths is None:
+                raise RuntimeError("SSH whisper command has no remote host")
+            staging_s = time.perf_counter() - staging_started
+            _remote_scratch_region_files = [
+                remote_paths[f"region_{i}"] for i in range(len(region_files))
+            ]
             # Rebuild command with remote paths.
+            flags_no_f = [
+                remote_paths["model"] if flag == model_path.as_posix() else flag
+                for flag in flags_no_f
+            ]
             f_flags = []
             for rp in _remote_scratch_region_files:
                 f_flags += ["-f", rp]
@@ -479,7 +498,12 @@ def transcribe(
             "model": model_path,
             "vad": vad_model_path,
         }
-        remote = _maybe_sync_remote(settings.whisper_cli_cmd, local_paths=local_sync_paths)
+        if is_remote:
+            staging_started = time.perf_counter()
+            remote = _maybe_sync_remote(settings.whisper_cli_cmd, local_paths=local_sync_paths)
+            staging_s = time.perf_counter() - staging_started
+        else:
+            remote = None
 
         # Stash the local-POSIX paths so _rewrite_remote_paths can identify them
         # inside the resolved cmd. Order matches the dict above.
@@ -506,7 +530,7 @@ def transcribe(
                 f"valid binary or shell command."
             )
 
-    t0 = time.perf_counter()
+    transcription_started = time.perf_counter()
     try:
         proc = subprocess.run(
             cmd,
@@ -522,6 +546,10 @@ def transcribe(
             f"Set WHISPER_CLI_CMD to a valid binary or shell command. "
             f"Underlying: {exc}"
         ) from exc
+    else:
+        transcription_s = time.perf_counter() - transcription_started
+        if on_output_ready is not None:
+            on_output_ready()
     finally:
         # Clean up temp region files.
         if _region_dir and _region_dir.exists():
@@ -538,18 +566,18 @@ def transcribe(
                     )
             except Exception:
                 pass
-    runtime_s = time.perf_counter() - t0
-
     stderr = proc.stderr or ""
     stdout = proc.stdout or ""
 
-    if proc.returncode != 0 and _NO_SPEECH_MARKER in stderr and settings.vad_enabled:
+    if proc.returncode != 0 and _NO_SPEECH_MARKER in stderr and settings.vad_mode == "builtin":
         log.info("whisper-cli VAD found no speech")
         return EngineResult(
             config=config,
+            vad_mode=settings.vad_mode,
             vad_enabled=settings.vad_enabled,
             transcript="",
-            runtime_s=runtime_s,
+            staging_s=staging_s,
+            transcription_s=transcription_s,
             silence_removed=None,
             speech_seconds=None,
             segments=[],
@@ -595,9 +623,11 @@ def transcribe(
 
     return EngineResult(
         config=config,
+        vad_mode=settings.vad_mode,
         vad_enabled=settings.vad_enabled,
         transcript=transcript,
-        runtime_s=runtime_s,
+        staging_s=staging_s,
+        transcription_s=transcription_s,
         silence_removed=silence_removed,
         speech_seconds=speech_seconds,
         segments=segments,
@@ -611,8 +641,15 @@ def transcribe(
 _REMOTE_SCRATCH = "/tmp/vad-bench-scratch"
 
 
+def _looks_like_shell_command(cmd_str: str) -> bool:
+    return any(char.isspace() for char in cmd_str) or any(
+        op in cmd_str for op in ("|", ">", "<", "&", ";", "$")
+    )
+
+
 def _is_ssh_command(cmd_str: str) -> bool:
-    return cmd_str.lstrip().startswith(("ssh ", "ssh\t"))
+    tokens = cmd_str.lstrip().split(None, 1)
+    return bool(tokens) and tokens[0] == "ssh"
 
 
 def _extract_ssh_host(cmd_str: str) -> str | None:
@@ -762,7 +799,9 @@ def parse_settings_overrides(overrides: dict, base: Settings) -> Settings:
     if not overrides:
         return base
     clean = {k: v for k, v in overrides.items() if v is not None}
-    return base.model_copy(update=clean)
+    if "vad_enabled" in clean:
+        raise ValueError("vad_enabled has been replaced by vad_mode")
+    return Settings.model_validate({**base.model_dump(), **clean})
 
 
 if __name__ == "__main__":  # self-check: token round-trip only

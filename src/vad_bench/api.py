@@ -24,11 +24,13 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import secrets
+import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -46,7 +48,8 @@ from .paths import (
     REPORTS_ROOT,
     UI_ROOT,
 )
-from .runner import RUN_STATUS_PATH, run as run_benchmark, read_status
+from .engine import _is_ssh_command
+from .runner import RUN_STATUS_PATH, _vad_binary_cmd, run as run_benchmark, read_status
 
 log = logging.getLogger(__name__)
 
@@ -132,12 +135,34 @@ def _readiness_issues(cfgs: list[dict], base: Settings) -> list[str]:
         if not model_path.exists():
             issues.append(f"{name}: whisper model not found at {model_path}")
 
-        if s.vad_enabled:
+        if s.vad_mode in ("builtin", "presegmented"):
             vad_path = MODELS_ROOT / s.vad_model_path
             if not vad_path.exists():
                 issues.append(f"{name}: Silero VAD model not found at {vad_path}")
+        # rms_energy needs no Silero model and no external segmenter binary
+        # — it's pure Python, always ready once the WAV/whisper model exist.
 
-        binary = s.whisper_cli_cmd.split(" ", 1)[0]
+        if s.vad_mode == "presegmented":
+            segment_cmd = _vad_binary_cmd(s.whisper_cli_cmd)
+            if _is_ssh_command(s.whisper_cli_cmd):
+                try:
+                    check = subprocess.run(
+                        f"{segment_cmd} --help",
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        shell=True,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    check = None
+                if check is None or check.returncode != 0:
+                    issues.append(f"{name}: remote VAD segmenter not ready: {segment_cmd}")
+            else:
+                segment_binary = segment_cmd.split(maxsplit=1)[0]
+                if shutil.which(segment_binary) is None and not Path(segment_binary).exists():
+                    issues.append(f"{name}: VAD segmenter not found: {segment_cmd}")
+
+        binary = s.whisper_cli_cmd.split(maxsplit=1)[0]
         if shutil.which(binary) is None and not Path(binary).exists():
             issues.append(f"{name}: whisper-cli not found: {binary!r}")
     return issues
@@ -172,6 +197,8 @@ def create_app() -> FastAPI:
     def api_run(
         background: BackgroundTasks,
         configs: str | None = None,  # JSON-encoded list of {name, overrides}
+        control_name: str | None = None,
+        candidate_name: str | None = None,
         force: bool = False,
     ):
         # Build the configs list. Either from JSON in the `configs` param
@@ -188,10 +215,19 @@ def create_app() -> FastAPI:
             cfgs = None  # runner's default
 
         check_cfgs = cfgs if cfgs is not None else [
-            {"name": "baseline_novad", "overrides": {"vad_enabled": False}},
-            {"name": "silero_vad",     "overrides": {"vad_enabled": True}},
+            {"name": "baseline_novad", "overrides": {"vad_mode": "off"}},
+            {"name": "silero_vad",     "overrides": {"vad_mode": "builtin"}},
         ]
-        issues = _readiness_issues(check_cfgs, get_settings())
+        if bool(control_name) != bool(candidate_name):
+            raise HTTPException(400, "control_name and candidate_name must be supplied together")
+        if control_name:
+            names = {cfg.get("name") for cfg in check_cfgs}
+            if control_name == candidate_name or control_name not in names or candidate_name not in names:
+                raise HTTPException(400, "control_name and candidate_name must be distinct submitted configs")
+        try:
+            issues = _readiness_issues(check_cfgs, get_settings())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if issues:
             return {"ok": False, "not_ready": True, "issues": issues}
 
@@ -205,7 +241,13 @@ def create_app() -> FastAPI:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        background.add_task(run_benchmark, cfgs, verbose=True)
+        background.add_task(
+            run_benchmark,
+            cfgs,
+            verbose=True,
+            control_name=control_name,
+            candidate_name=candidate_name,
+        )
         return {"ok": True, "started": True}
 
     @app.get("/api/progress")
@@ -280,7 +322,7 @@ def create_app() -> FastAPI:
     def api_reference_segments():
         """Return the reference transcript as ``[{start, end, text}, ...]``.
 
-        Used by the VAD breakdown tab to draw the ground-truth timeline
+        Used by the VAD breakdown tab to draw the reference-caption timeline
         underneath the Whisper-region timeline. The on-disk schema uses
         ``start_s`` / ``end_s`` (from ``reference.write_reference_artifacts``)
         — we normalize to ``start`` / ``end`` here for the UI.
@@ -309,13 +351,14 @@ def create_app() -> FastAPI:
             "whisper_model": s.whisper_model,
             "language": s.language,
             "threads": s.threads,
-            "vad_enabled": s.vad_enabled,
+            "vad_mode": s.vad_mode,
             "vad_model_path": s.vad_model_path,
             "vad_threshold": s.vad_threshold,
             "vad_min_speech_ms": s.vad_min_speech_ms,
             "vad_min_silence_ms": s.vad_min_silence_ms,
             "vad_speech_pad_ms": s.vad_speech_pad_ms,
             "vad_max_speech_s": s.vad_max_speech_s,
+            "rms_threshold": s.rms_threshold,
             "audio_sample_rate": s.audio_sample_rate,
             "audio_channels": s.audio_channels,
             "serve_host": s.serve_host,
@@ -346,15 +389,28 @@ def create_app() -> FastAPI:
         return JSONResponse(sample_dict())
 
     @app.get("/api/history")
-    def api_history():
+    def api_history(
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=50),
+    ):
         idx = HISTORY_ROOT / "index.json"
         if not idx.exists():
-            return {"runs": []}
-        try:
-            runs = json.loads(idx.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {"runs": []}
-        return {"runs": list(reversed(runs))}  # newest first
+            runs = []
+        else:
+            try:
+                runs = json.loads(idx.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                runs = []
+        newest = list(reversed(runs))
+        total = len(newest)
+        start = (page - 1) * page_size
+        return {
+            "runs": newest[start:start + page_size],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": max(1, math.ceil(total / page_size)),
+        }
 
     @app.get("/api/history/{run_id}")
     def api_history_detail(run_id: str):

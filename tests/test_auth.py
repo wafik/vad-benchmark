@@ -17,8 +17,8 @@ import base64
 import pytest
 from fastapi.testclient import TestClient
 
-from src.vad_bench import api
-from src.vad_bench.api import create_app
+from vad_bench import api
+from vad_bench.api import create_app
 
 
 TEST_PASSWORD = "test-pass-xyz"

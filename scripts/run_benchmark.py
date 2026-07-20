@@ -5,18 +5,18 @@ flag from ``config.Settings`` is overridable here.
 
 Examples
 --------
-    # canonical comparison (baseline_novad vs silero_vad)
+    # canonical comparison (vad_mode=off vs vad_mode=builtin)
     uv run python -m scripts.run_benchmark
 
     # single config with explicit overrides
     uv run python -m scripts.run_benchmark \\
-        --config name=silero_t05,vad_enabled=true,vad_threshold=0.5
+        --config name=silero_t05,vad_mode=builtin,vad_threshold=0.5
 
     # multiple configs
     uv run python -m scripts.run_benchmark \\
-        --config name=baseline,vad_enabled=false \\
-        --config name=silero_05,vad_enabled=true,vad_threshold=0.5 \\
-        --config name=silero_07,vad_enabled=true,vad_threshold=0.7
+        --config name=baseline,vad_mode=off \\
+        --config name=silero_05,vad_mode=builtin,vad_threshold=0.5 \\
+        --config name=silero_07,vad_mode=builtin,vad_threshold=0.7
 """
 from __future__ import annotations
 
@@ -47,6 +47,9 @@ def _parse_kv_spec(spec: str | None) -> dict | None:
         k, v = kv.split("=", 1)
         k = k.strip()
         v = v.strip()
+        if k == "name":
+            out[k] = v
+            continue
         # Cast to the right type using the Settings model.
         field = Settings.model_fields.get(k)
         if field is None:
@@ -67,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="VAD benchmark CLI")
     p.add_argument(
         "--config", action="append", default=[],
-        help="Repeatable. Format: name=<n>,vad_enabled=<bool>,vad_threshold=<float>,… "
+        help="Repeatable. Format: name=<n>,vad_mode=<off|builtin|presegmented>,vad_threshold=<float>,… "
              "Anything not given falls back to .env / defaults. "
              "If omitted entirely, runs the canonical baseline_novad vs silero_vad.",
     )

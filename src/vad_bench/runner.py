@@ -17,20 +17,25 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 from .audio import ensure_wav, slice_wav_segments, wav_duration
 from .config import Settings
 from .engine import (
     EngineResult,
+    _is_ssh_command,
     compute_vad_segments,
     parse_settings_overrides,
     transcribe,
 )
 from .metrics import RunMetrics, aggregate, cer, normalize, per_region_wer, wer, word_alignment
-from .paths import CHUNKS_ROOT, HISTORY_ROOT, MODELS_ROOT, REPORTS_ROOT
-from .reference import load_reference, write_reference_artifacts
+from .manifest import build_manifest, snapshot_manifest, write_manifest
+from .paths import CHUNKS_ROOT, HISTORY_ROOT, MODELS_ROOT, REFERENCE_TXT, REPORTS_ROOT
+from .reference import Segment, load_reference, write_reference_artifacts
+from .rms_vad import compute_rms_segments
 from .sysmon import ResourceMonitor
 from .verdict import build_verdict
 
@@ -57,6 +62,11 @@ def _now_iso() -> str:
 
 def _slug(name: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in name).strip("_").lower()
+
+
+def _run_id(started_at: str) -> str:
+    timestamp = started_at.replace(":", "-").replace("T", "_").replace("Z", "")
+    return f"{timestamp}_{uuid.uuid4().hex[:8]}"
 
 
 def _write_status(status: dict) -> None:
@@ -89,7 +99,7 @@ def _write_status(status: dict) -> None:
         warnings.warn(f"_write_status fell back to non-atomic write: {last_err}")
 
 
-def _vad_binary_cmd() -> str:
+def _vad_binary_cmd(cli_cmd: str) -> str:
     """Return the whisper-vad-speech-segments command, respecting the SSH
     transport configured in ``WHISPER_CLI_CMD``.
 
@@ -98,10 +108,8 @@ def _vad_binary_cmd() -> str:
     For absolute paths (e.g. ``/path/to/whisper-cli``), replace the filename.
     For bare names, assume the VAD binary is on PATH.
     """
-    from .config import get_settings
-    cli_cmd = get_settings().whisper_cli_cmd
     # SSH form: "ssh [opts] HOST '…/whisper-cli'"
-    if cli_cmd.strip().startswith("ssh "):
+    if _is_ssh_command(cli_cmd):
         return re.sub(r"whisper-cli\b", "whisper-vad-speech-segments", cli_cmd)
     # Absolute path or relative path: replace the filename component.
     p = Path(cli_cmd)
@@ -112,6 +120,8 @@ def run(
     configs: list[dict] | None = None,
     *,
     verbose: bool = True,
+    control_name: str | None = None,
+    candidate_name: str | None = None,
 ) -> dict:
     """Top-level entrypoint.
 
@@ -124,9 +134,11 @@ def run(
     """
     if configs is None:
         configs = [
-            {"name": "baseline_novad", "overrides": {"vad_enabled": False}},
-            {"name": "silero_vad",     "overrides": {"vad_enabled": True}},
+            {"name": "baseline_novad", "overrides": {"vad_mode": "off"}},
+            {"name": "silero_vad",     "overrides": {"vad_mode": "builtin"}},
         ]
+        control_name = control_name or "baseline_novad"
+        candidate_name = candidate_name or "silero_vad"
 
     # 1. Ensure audio + reference are ready.
     wav = ensure_wav()
@@ -144,12 +156,22 @@ def run(
     if CHUNKS_ROOT.exists():
         shutil.rmtree(CHUNKS_ROOT)
 
+    started_at = _now_iso()
+    run_id = _run_id(started_at)
     base = Settings()
+    run_settings = [
+        (cfg.get("name") or f"config_{idx}", parse_settings_overrides(cfg.get("overrides") or {}, base))
+        for idx, cfg in enumerate(configs, 1)
+    ]
+    manifest_snapshot = snapshot_manifest(
+        [settings for _, settings in run_settings],
+        audio_path=wav,
+        reference_path=REFERENCE_TXT,
+    )
 
     monitor = ResourceMonitor(interval_s=2.0)
     monitor.start()
 
-    started_at = _now_iso()
     completed: list[dict] = []
     gen = _next_gen()
 
@@ -166,20 +188,16 @@ def run(
     run_records: list[dict] = []
 
     try:
-        for idx, cfg in enumerate(configs, 1):
+        for idx, (name, s) in enumerate(run_settings, 1):
             if gen != _RUN_GEN:
                 raise _Superseded()
-
-            name = cfg.get("name") or f"config_{idx}"
-            overrides = cfg.get("overrides") or {}
-            s = parse_settings_overrides(overrides, base)
 
             _write_status({
                 "running": True,
                 "started_at": started_at,
                 "total": len(configs),
                 "completed": completed,
-                "current": {"name": name, "index": idx, "vad_enabled": s.vad_enabled},
+                "current": {"name": name, "index": idx, "vad_mode": s.vad_mode, "vad_enabled": s.vad_enabled},
                 "system": monitor.latest,
             })
 
@@ -187,25 +205,44 @@ def run(
             print(f"[{idx}/{len(configs)}] {name}: vad={s.vad_enabled}", flush=True)
 
             try:
-                # Pre-compute VAD segments so we control segmentation
-                # instead of whisper's decoder deciding segment boundaries.
+                config_started = time.perf_counter()
                 vad_segs = None
-                if s.vad_enabled:
+                segment_prep_s = 0.0
+                segment_staging_s = 0.0
+                if s.vad_mode == "presegmented":
+                    segment_timings: dict[str, float] = {}
                     vad_model = MODELS_ROOT / s.vad_model_path
-                    if vad_model.exists():
-                        try:
-                            vad_segs = compute_vad_segments(
-                                wav, vad_model, s,
-                                cmd=_vad_binary_cmd(),
-                            )
-                            log.info("VAD pre-computed %d segments for %s",
-                                     len(vad_segs), name)
-                        except Exception as exc:
-                            log.warning(
-                                "VAD pre-computation failed (%s), "
-                                "falling back to whisper --vad: %s",
-                                type(exc).__name__, exc,
-                            )
+                    vad_segs = compute_vad_segments(
+                        wav, vad_model, s,
+                        cmd=_vad_binary_cmd(s.whisper_cli_cmd),
+                        timings=segment_timings,
+                    )
+                    segment_prep_s = segment_timings["segment_prep_s"]
+                    segment_staging_s = segment_timings["staging_s"]
+                    if not vad_segs:
+                        raise RuntimeError("presegmented mode produced no speech segments")
+                    log.info("VAD pre-computed %d segments for %s", len(vad_segs), name)
+                elif s.vad_mode == "rms_energy":
+                    # Pure Python, local — no external binary/SSH, so there's
+                    # no staging cost to time.
+                    prep_started = time.perf_counter()
+                    vad_segs = compute_rms_segments(
+                        wav,
+                        rms_threshold=s.rms_threshold,
+                        min_speech_ms=s.vad_min_speech_ms,
+                        min_silence_ms=s.vad_min_silence_ms,
+                        speech_pad_ms=s.vad_speech_pad_ms,
+                    )
+                    segment_prep_s = time.perf_counter() - prep_started
+                    if not vad_segs:
+                        raise RuntimeError("rms_energy mode produced no speech segments")
+                    log.info("RMS-energy VAD pre-computed %d segments for %s", len(vad_segs), name)
+
+                total_s: float | None = None
+
+                def output_ready() -> None:
+                    nonlocal total_s
+                    total_s = time.perf_counter() - config_started
 
                 result: EngineResult = transcribe(
                     wav,
@@ -214,7 +251,10 @@ def run(
                     models_root=MODELS_ROOT,
                     audio_duration_s=audio_duration,
                     vad_segments=vad_segs,
+                    on_output_ready=output_ready,
                 )
+                if total_s is None:
+                    raise RuntimeError("whisper transcription returned without an output timestamp")
             except Exception as exc:  # noqa: BLE001
                 log.exception("Config %s failed", name)
                 _write_status({
@@ -226,24 +266,27 @@ def run(
                 })
                 raise
 
-            rm = _score(result, reference_text, audio_duration,
-                        ref_segments=segments)
+            rm = _score(
+                result,
+                reference_text,
+                audio_duration,
+                ref_segments=segments,
+                vad_mode=s.vad_mode,
+                total_s=total_s,
+                segment_prep_s=segment_prep_s,
+                staging_s=segment_staging_s + result.staging_s,
+            )
             run_metrics.append(rm)
-            run_records.append(_record_from_metrics(rm, s))
+            run_records.append(_record_from_metrics(rm, s, result.cmd))
 
             if s.vad_enabled and result.segments:
                 slice_wav_segments(wav, result.segments, CHUNKS_ROOT / _slug(name))
 
-            # Per-config JSON artifact (transcript, alignment, metrics).
-            (per_config_dir / f"{_slug(name)}.json").write_text(
-                json.dumps(rm.to_dict(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-
             completed.append({
                 "name": name,
+                "vad_mode": s.vad_mode,
                 "vad_enabled": s.vad_enabled,
-                "runtime_s": round(result.runtime_s, 3),
+                "runtime_s": round(result.transcription_s, 3),
                 "wer": round(rm.wer, 4),
                 "cer": round(rm.cer, 4),
             })
@@ -253,13 +296,13 @@ def run(
                 "started_at": started_at,
                 "total": len(configs),
                 "completed": completed,
-                "current": {"name": name, "index": idx, "vad_enabled": s.vad_enabled},
+                "current": {"name": name, "index": idx, "vad_mode": s.vad_mode, "vad_enabled": s.vad_enabled},
                 "system": monitor.latest,
             })
 
             if verbose:
                 tag = f"WER={rm.wer:.3f} CER={rm.cer:.3f} RTF={rm.rtf:.3f} " \
-                      f"runtime={rm.runtime_s:.1f}s"
+                       f"total={rm.total_s:.1f}s"
                 if rm.silence_removed is not None:
                     tag += f" silence_removed={rm.silence_removed:.1%} segs={rm.n_segments}"
                 print(f"  {name}: {tag}", flush=True)
@@ -267,15 +310,53 @@ def run(
         if gen != _RUN_GEN:
             raise _Superseded()
 
+        manifest_path = write_manifest(
+            run_id,
+            build_manifest(
+                run_id,
+                started_at,
+                [settings for _, settings in run_settings],
+                run_records,
+                audio_path=wav,
+                reference_path=REFERENCE_TXT,
+                snapshot=manifest_snapshot,
+            ),
+        )
+        manifest_path_text = str(manifest_path)
+        for metric, record in zip(run_metrics, run_records):
+            metric.run_id = run_id
+            metric.manifest_path = manifest_path_text
+            record["run_id"] = run_id
+            record["manifest_path"] = manifest_path_text
+
+        # Per-config JSON is written after the manifest so every result links to it.
+        for metric in run_metrics:
+            (per_config_dir / f"{_slug(metric.config)}.json").write_text(
+                json.dumps(metric.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
         summary = aggregate(run_metrics)
+        for config, record in zip(summary["configs"], run_records):
+            config.update({
+                "effective_settings": record["effective_settings"],
+                "whisper_model": record["whisper_model"],
+                "language": record["language"],
+                "threads": record["threads"],
+            })
+        summary["run_id"] = run_id
+        summary["manifest_path"] = manifest_path_text
+        summary["reference_quality"] = "silver"
         summary["audio_duration_s"] = audio_duration
         summary["reference_segments"] = len(segments)
         summary["last_run"] = _now_iso()
-        summary["total_runtime_s"] = round(sum(r.runtime_s for r in run_metrics), 3)
+        summary["total_runtime_s"] = round(sum(r.total_s for r in run_metrics), 3)
+        summary["control_name"] = control_name
+        summary["candidate_name"] = candidate_name
 
         resource_summary = monitor.summary()
         summary["resources"] = resource_summary
-        summary["verdict"] = build_verdict(run_records)
+        summary["verdict"] = build_verdict(run_records, control_name, candidate_name)
 
         # Write summary.json + .csv.
         (REPORTS_ROOT / "summary.json").write_text(
@@ -285,7 +366,7 @@ def run(
         _write_summary_csv(run_records)
 
         # History snapshot.
-        _save_to_history(summary, run_records, started_at)
+        _save_to_history(summary, run_records, started_at, run_id, manifest_path_text)
 
         _write_status({
             "running": False,
@@ -325,31 +406,41 @@ def run(
 
 
 def _score(result: EngineResult, reference_norm: str, audio_duration_s: float,
-           ref_segments: list[tuple[float, float, str]] | None = None) -> RunMetrics:
+            ref_segments: Sequence[Segment] | None = None,
+            *, vad_mode: str | None = None, total_s: float | None = None,
+           segment_prep_s: float = 0.0, staging_s: float | None = None) -> RunMetrics:
     hyp_norm = normalize(result.transcript)
     n_segs = len(result.segments) if result.segments else None
     speech_sec = result.speech_seconds
     avg_dur = (speech_sec / n_segs) if (speech_sec and n_segs) else None
 
-    # Compute per-region WER/CER using real jiwer metrics (server-side).
-    pr_wer: list[dict] = []
-    if ref_segments and result.segments:
-        try:
-            pr_wer = per_region_wer(ref_segments, result.segments)
-        except Exception:
-            pass  # non-critical; UI falls back to client-side proxy
+    # Caption timestamps form reference-comparison windows, not VAD boundaries.
+    region_refs = [
+        (segment.start_s, segment.end_s if segment.end_s is not None else audio_duration_s, segment.text)
+        for segment in ref_segments or ()
+    ]
+    try:
+        pr_wer = per_region_wer(region_refs, result.segments)
+        metric_status, metric_error = "verified", None
+    except Exception as exc:  # Per-region scoring is optional; overall WER/CER are not.
+        pr_wer, metric_status, metric_error = [], "error", str(exc)
 
     return RunMetrics(
         config=result.config,
+        vad_mode=vad_mode or result.vad_mode,
         vad_enabled=result.vad_enabled,
         transcript_raw=result.transcript,
         transcript_normalized=hyp_norm,
         reference_normalized=reference_norm,
         wer=wer(reference_norm, hyp_norm),
         cer=cer(reference_norm, hyp_norm),
-        rtf=result.runtime_s / audio_duration_s if audio_duration_s > 0 else 0.0,
-        runtime_s=result.runtime_s,
+        rtf=0.0,
+        runtime_s=result.transcription_s,
         audio_duration_s=audio_duration_s,
+        total_s=total_s if total_s is not None else result.staging_s + result.transcription_s,
+        segment_prep_s=segment_prep_s,
+        staging_s=result.staging_s if staging_s is None else staging_s,
+        transcription_s=result.transcription_s,
         speech_seconds=result.speech_seconds,
         silence_removed=result.silence_removed if result.vad_enabled else None,
         n_segments=n_segs,
@@ -357,13 +448,22 @@ def _score(result: EngineResult, reference_norm: str, audio_duration_s: float,
         alignment=word_alignment(reference_norm, hyp_norm),
         chunks_available=bool(result.vad_enabled and result.segments),
         per_region_wer=pr_wer,
+        metric_status=metric_status,
+        metric_error=metric_error,
         avg_seg_duration=avg_dur,
     )
 
 
-def _record_from_metrics(rm: RunMetrics, s: Settings) -> dict:
+def _record_from_metrics(
+    rm: RunMetrics,
+    s: Settings,
+    resolved_command: list[str] | str | None = None,
+) -> dict:
     return {
         "config": rm.config,
+        "resolved_command": resolved_command,
+        "vad_mode": s.vad_mode,
+        "effective_settings": s.model_dump(exclude={"auth_password"}),
         "vad_enabled": rm.vad_enabled,
         "transcript_raw": rm.transcript_raw,
         "wer": rm.wer,
@@ -371,6 +471,10 @@ def _record_from_metrics(rm: RunMetrics, s: Settings) -> dict:
         "rtf": rm.rtf,
         "runtime_s": rm.runtime_s,
         "audio_duration_s": rm.audio_duration_s,
+        "total_s": rm.total_s,
+        "segment_prep_s": rm.segment_prep_s,
+        "staging_s": rm.staging_s,
+        "transcription_s": rm.transcription_s,
         "speech_seconds": rm.speech_seconds,
         "silence_removed": rm.silence_removed,
         "n_segments": rm.n_segments,
@@ -378,7 +482,10 @@ def _record_from_metrics(rm: RunMetrics, s: Settings) -> dict:
             {"start": start, "end": end, "text": text}
             for start, end, text in rm.segments
         ],
+        "metric_status": rm.metric_status,
+        "metric_error": rm.metric_error,
         "vad_threshold": s.vad_threshold,
+        "rms_threshold": s.rms_threshold,
         "vad_min_speech_ms": s.vad_min_speech_ms,
         "vad_min_silence_ms": s.vad_min_silence_ms,
         "vad_speech_pad_ms": s.vad_speech_pad_ms,
@@ -397,10 +504,11 @@ def _write_summary_csv(records: list[dict]) -> None:
         csv_path.write_text("config,wer,cer,rtf,runtime_s\n", encoding="utf-8")
         return
     fields = [
-        "config", "vad_enabled", "wer", "cer", "rtf", "runtime_s",
-        "audio_duration_s", "speech_seconds", "silence_removed", "n_segments",
+        "config", "vad_mode", "vad_enabled", "wer", "cer", "rtf", "runtime_s",
+        "audio_duration_s", "total_s", "segment_prep_s", "staging_s", "transcription_s",
+        "speech_seconds", "silence_removed", "n_segments", "metric_status", "metric_error",
         "whisper_model", "language", "threads",
-        "vad_threshold", "vad_min_speech_ms", "vad_min_silence_ms",
+        "vad_threshold", "rms_threshold", "vad_min_speech_ms", "vad_min_silence_ms",
         "vad_speech_pad_ms", "vad_max_speech_s",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as f:
@@ -410,11 +518,19 @@ def _write_summary_csv(records: list[dict]) -> None:
             w.writerow(r)
 
 
-def _save_to_history(summary: dict, records: list[dict], started_at: str) -> None:
+def _save_to_history(
+    summary: dict,
+    records: list[dict],
+    started_at: str,
+    run_id: str,
+    manifest_path: str,
+) -> None:
     HISTORY_ROOT.mkdir(parents=True, exist_ok=True)
-    run_id = started_at.replace(":", "-").replace("T", "_").replace("Z", "")
     snapshot = {
         "id": run_id,
+        "run_id": run_id,
+        "manifest_path": manifest_path,
+        "reference_quality": summary.get("reference_quality"),
         "timestamp": started_at,
         "audio_duration_s": summary.get("audio_duration_s"),
         "total_runtime_s": summary.get("total_runtime_s"),
@@ -452,7 +568,6 @@ def _save_to_history(summary: dict, records: list[dict], started_at: str) -> Non
         "best_wer": min((r["wer"] for r in records), default=None),
         "best_cer": min((r["cer"] for r in records), default=None),
     })
-    index = index[-50:]
     index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
