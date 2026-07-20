@@ -1,9 +1,10 @@
 # RMS-Energy VAD vs Silero VAD — Result Report
 
 > One real run on the Jetson, four VAD modes, same audio, same reference,
-> same model. This doc explains what was compared, how each mode works, and
-> why Silero (built-in) wins on both accuracy and speed — with the actual
-> numbers from that run.
+> same model. This doc explains what was compared, how each mode works, why
+> Silero (built-in) wins on both accuracy and speed, and — since the
+> downstream consumer is `ai4db`'s liblouis braille pipeline — what that
+> means for the text actually reaching a braille reader (§8).
 
 ---
 
@@ -176,9 +177,16 @@ time spent finding and writing the regions in the first place.
 
 | If you need... | Use |
 |---|---|
-| Best accuracy, lowest resource use on Jetson | **`silero_builtin`** — the ai4db production choice, confirmed |
-| A quick non-neural sanity baseline (no model file, pure Python) | `rms_energy` — but expect worse WER/CER *and* worse RTF, not a lighter-weight option |
+| Best accuracy, lowest resource use on Jetson, and the cheapest/cleanest braille output downstream | **`silero_builtin`** — the ai4db production choice, confirmed |
+| A quick non-neural sanity baseline (no model file, pure Python) | `rms_energy` — but expect worse WER/CER *and* worse RTF *and* ~6% more braille cells for the same audio, not a lighter-weight option anywhere in the pipeline |
 | A standalone segmenter for other tooling reasons | `silero_presegmented` — still Silero-quality boundaries, but the multi-file transcribe path costs 2x `builtin`'s time for no accuracy gain here |
+
+VAD-segment length itself is a non-issue for the braille step (§8) — whisper
+runs with `--no-timestamps` in production, so liblouis only ever sees one
+flat transcript string, translated in ~20 ms regardless of mode. What
+*does* carry through is transcript quality: a cleaner transcript (`builtin`)
+produces measurably fewer, cheaper braille cells than a fragmented one
+(`rms_energy`).
 
 **Caveat carried over from the benchmark's standing caveats:** this is one
 Indonesian podcast clip scored against a *silver* (YouTube auto-transcript)
@@ -186,6 +194,111 @@ reference — WER/CER are useful for *ranking these four configs against each
 other*, not as absolute accuracy numbers. The ranking (`builtin` > `off` ≈
 `presegmented` > `rms_energy` on CER; `builtin` cheapest of the VAD modes)
 is the signal to trust from this run.
+
+---
+
+## 8 · Does VAD-segment length matter once liblouis gets the text?
+
+The production `ai4db` pipeline feeds whisper's output to `liblouis`
+(`translateString(["unicode.dis", "id-id-g2.ctb"], text)`) to produce braille
+dots. Whisper-cli runs with `--no-timestamps` in production
+(`stt/whisper_bridge.py`), so it returns **one flat transcript string per
+utterance** — the internal VAD segment boundaries (5.5 s median for
+`builtin`, 1.4 s for `rms_energy`) are never exposed past that point.
+liblouis only ever sees the final joined text.
+
+To confirm this empirically rather than just reason about it, each config's
+transcript was piped through the **actual production call**
+(`louis.translateString`, `id-id-g2.ctb`, the Indonesian Grade-2 table
+`ai4db` uses) on the Jetson:
+
+| Config | Input words | Braille cells out | Translate time |
+|---|---:|---:|---:|
+| `off` | 1080 | 5697 | 0.0219 s |
+| **`silero_builtin`** | 1057 | **5634** (fewest) | **0.0173 s** (fastest) |
+| `silero_presegmented` | 1066 | 5692 | 0.0174 s |
+| `rms_energy` | 1090 | 5961 (most) | 0.0180 s |
+
+**Two things fall out of this:**
+
+1. **liblouis translate time is irrelevant to VAD-segment length.** 7,442
+   characters translate in ~17-22 milliseconds regardless of mode — three
+   orders of magnitude below anything a user would notice, and it doesn't
+   correlate with segment count (`rms_energy` has 275 segments feeding into
+   its transcript, `builtin` has 97; translate time is within noise of each
+   other). liblouis operates on the final string, not on audio segments.
+2. **`silero_builtin` produces the *cheapest* braille output, not just the
+   most accurate transcript.** Fewer garbled/split words means fewer,
+   longer Grade-2 contractions instead of many short ones — 5634 cells vs.
+   5961 for `rms_energy` (+327 cells, +5.8%) for describing the *same*
+   ~10-minute clip. On a physical braille display with a fixed cell count
+   per line (e.g. a 14-cell Focus 14), that's real, measurable extra
+   scrolling for the end user — a second-order cost of a worse transcript
+   that doesn't show up in WER/CER alone.
+
+### Three aligned excerpts — same audio window, four transcripts, four braille outputs
+
+Each block below pulls the same time window across all four configs so the
+degradation (or lack of it) is visible directly, not just in aggregate
+numbers.
+
+#### Window 0–15s (opening line)
+
+| Config | Text | Braille cells |
+|---|---|---:|
+| `off` | *"Yang saya sesalkan adalah beberapa kawan-kawan, melenial ataupun jenzi, melihat situasi ini tidak memandang secara suk turau, biom menyalakan diri seghip, kenapa saya dipaihata karena saya tidak counterten, bukan karena memang dia mendorbe korban secara suk turau,"* | 194 |
+| **`silero_builtin`** | *"yang saya sesalkan adalah, doberapa kawan-kawan. Melenial ataupun jenzi, melihat situasi ini tidak memandang secara sukturau. Bia menyalakan hidis-hikip, kenapa saya dipehatah karena saya tidak kompeten. Nenekan, karena ngemangnya, merdua di korban secara sukturau."* | 203 |
+| `silero_presegmented` | *"yang saya sesuatu penandera. untuk berapa kawan-kawan. melenial ataupun jenzi, melihat situasi ini. tidak memandang secara suk pura. Biasanya lakani disedih. kenapa saya dipehatan karena saya tidak kontoknya? bukan permanent yang menggniah mengembangkan di korbanistya rasuk-kurau"* | 205 |
+| `rms_energy` | *"yang saya sehalkan dan derla. dobra pa. Kauan Kauan. Melenial ataupun jenzi Mali haksit posi ini. Tidak memandang secara suk. Bula. Biasanya akan niris gitu. kenapa saya dipehata karena saya tidak kompeten. kan permanent yang menggniah."* | 186 |
+
+All four are rough at the opening (the tiny model + silver reference means
+even `off` isn't clean), but note `rms_energy`'s **"dobra pa. Kauan Kauan."**
+— two whole words ("beberapa", "kawan-kawan") shredded into fragments and
+capitalized as if they were separate sentences. That's a direct symptom of
+cutting mid-word: RMS energy detected a dip in loudness *inside* "beberapa"
+and "kawan-kawan" and inserted a hard segment boundary there.
+
+#### Window 150–165s (mid-clip — the clearest example)
+
+| Config | Text |
+|---|---|
+| `off` | *"itu nyantah jauh lebih besar. Tukis cara seluhan kalau ngomong STEM, asyat negara itu hanya bisa memproduksi itu jauh rotoslima-pluribu, produkt STEM-stown dibandingkan India..."* |
+| **`silero_builtin`** | *"**Mereka juga investasi di stem atau science technology engineering mathematics**, itu nyata, jauh lebih besar. Tukis cara seluruh yang kalau ngomong stem, asyat negara itu hanya bisa memproduksi itu juratus-limapuri buk..."* |
+| `silero_presegmented` | *"itu nyantah jauh lebih besar kecil harus seluruh, kalau ngomong stem, asyeteng geratu, hanya bisa memproduksi itu jelas-jurat-usli memapur ribu..."* |
+| `rms_energy` | *"itu nyantah jauh lebih besar Jadi secara seluruh, hangung-kalangan mengstem, asyetengen retuhan yang bisa memproduksi itu jelas-jurat-usli memapur ribu..."* |
+
+This is the sharpest example in the run. **Only `silero_builtin` captures the
+opening clause** — "Mereka juga investasi di stem atau science technology
+engineering mathematics" ("They also invest in STEM, or science technology
+engineering mathematics"). `off`, `presegmented`, and `rms_energy` all start
+mid-sentence at *"itu nyantah..."*, meaning a whole clause of speech was
+either missed entirely or merged unrecognizably into the previous segment in
+those three modes. Silero's neural boundary detection found a real pause
+that the other three methods didn't — a case where using VAD at all (and
+using it well) recovers content that would otherwise be lost, not just
+reduce processing time.
+
+#### Window 300–315s (later section)
+
+| Config | Text |
+|---|---|
+| `off` | *"Nah, kenapa terjadi informalisasi? Tentunya ini yang fundamental sekali adalah kurangnya, kualitas mendikan biru ni-sia, dan kurangnya investasi kita di stem..."* |
+| **`silero_builtin`** | *"Nah, kenapa terjadi informa-lisasi? Tentunya ini yang fundamental sekali adalah kurangnya, quality dikandir Indonesia. Dan kurangnya investasi kita di stem..."* |
+| `silero_presegmented` | *"Nakkan yang poterjadi informalisasi, tentunya ini yang fundamental sekali adalah kurangnya, quality-spendikan biru-bisia. dan kurangnya investasi kita di stem..."* |
+| `rms_energy` | *"Kami empat rejadi informalisa. Tentunya ini yang mau. pun demen tau sekali ada lah. kurangnya, quality suspension dikan biru nyesia..."* |
+
+Here the gap is more subtle — all four get the gist — but `rms_energy`
+again shows the clearest fragmentation: **"Nah, kenapa terjadi..."** (a
+smooth opening in the other three) becomes **"Kami empat rejadi..."**, an
+outright misrecognition, plus extra sentence-breaking mid-thought
+("Tentunya ini yang mau. pun demen tau sekali ada lah.") that isn't present
+in `builtin`'s version.
+
+**Reading across all three windows:** `silero_builtin` is consistently the
+version closest to a clean, single-clause reading — exactly what a braille
+reader benefits from, since braille reading is inherently serial (one cell
+group at a time) and doesn't forgive fragmented, mis-punctuated text the way
+a sighted skim-reader might.
 
 ---
 
